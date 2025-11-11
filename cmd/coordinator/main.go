@@ -40,6 +40,9 @@ func main() {
 	}
 	log.Println("coordinator listening on", addr)
 
+	// UDP listener for robot positions
+	go udpListen(":9001")
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -160,4 +163,53 @@ func writeText(c net.Conn, code int, body string) {
 func writeJSON(c net.Conn, code int, body string) {
 	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
+}
+
+func udpListen(addr string) {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("udp listening on", addr)
+
+	buf := make([]byte, 256)
+	for {
+		n, _, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			continue
+		}
+		msg := strings.TrimSpace(string(buf[:n])) // expected: "id,x,y"
+		parts := strings.Split(msg, ",")
+		if len(parts) != 3 {
+			continue
+		}
+
+		id, err1 := strconv.Atoi(parts[0])
+		x, err2 := strconv.Atoi(parts[1])
+		y, err3 := strconv.Atoi(parts[2])
+		if err1 != nil || err2 != nil || err3 != nil {
+			continue
+		}
+
+		st.mu.Lock()
+		if rb, ok := st.robots[id]; ok {
+			if x < 0 {
+				x = 0
+			} else if x >= st.width {
+				x = st.width - 1
+			}
+			if y < 0 {
+				y = 0
+			} else if y >= st.height {
+				y = st.height - 1
+			}
+			rb.X, rb.Y = x, y
+			st.robots[id] = rb
+		}
+		st.mu.Unlock()
+	}
 }
