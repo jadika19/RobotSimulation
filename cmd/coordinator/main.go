@@ -209,6 +209,8 @@ func udpListen(addr string) {
 			}
 			rb.X, rb.Y = x, y
 			st.robots[id] = rb
+
+			fmt.Printf("Robot %d moved to (%d, %d)\n", id, x, y)
 		}
 		st.mu.Unlock()
 	}

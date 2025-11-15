@@ -22,8 +22,8 @@ type regResp struct {
 }
 
 func main() {
-	coordHTTP := "http://localhost:8080"
-	udpAddr := "localhost:9001"
+	coordHTTP := "http://coordinator:8080"
+	udpAddr := "coordinator:9001"
 
 	// 1) register
 	var out regResp

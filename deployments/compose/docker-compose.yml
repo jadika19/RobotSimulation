@@ -1,0 +1,17 @@
+services:
+  coordinator:
+    build:
+      context: ../../      
+      dockerfile: deployments/Docker/coordinator/Dockerfile
+    ports:
+      - "8080:8080"
+      - "9001:9001/udp"
+
+  detector:
+    build:
+      context: ../../
+      dockerfile: deployments/Docker/detector/Dockerfile
+    depends_on:
+      - coordinator
+    deploy:
+      replicas: 3
