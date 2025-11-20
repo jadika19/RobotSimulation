@@ -10,6 +10,7 @@ Es besteht aus zwei Komponenten:
 
 ## Projektstruktur
 
+```bash
 projekt/
 	cmd/
 		coordinator/
@@ -34,6 +35,7 @@ projekt/
 	go.mod
 	Makefile
 	README.md
+```
 
 ## Voraussetzungen
 

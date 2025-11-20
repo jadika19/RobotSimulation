@@ -141,6 +141,8 @@ func handle(c net.Conn, st *State) {
 		count := len(st.Robots)
 		st.Mu.RUnlock()
 		writeJSON(c, 200, fmt.Sprintf(`{"ok":true,"robots":%d}`, count))
+		// TODO: Positionen der Roboter ausgeben
+		// optional: Karte mit Positionen der Roboter ausgeben
 
 	case method == "GET" && path == "/map":
 		st.Mu.RLock()
