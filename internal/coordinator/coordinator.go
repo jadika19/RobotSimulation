@@ -139,18 +139,25 @@ func handle(c net.Conn, st *State) {
 	switch {
 	case method == "GET" && path == "/status":
 		st.Mu.RLock()
-		count := len(st.Robots)
+		type robotView struct{ ID, X, Y int }
+		robots := make([]robotView, 0, len(st.Robots))
+		for _, rb := range st.Robots {
+			robots = append(robots, robotView(rb))
+		}
+		resp := map[string]any{
+			"ok":     true,
+			"robots": robots,
+		}
 		st.Mu.RUnlock()
-		writeJSON(c, 200, fmt.Sprintf(`{"ok":true,"robots":%d}`, count))
-		// TODO: Positionen der Roboter ausgeben
-		// optional: Karte mit Positionen der Roboter ausgeben
+		b, _ := json.MarshalIndent(resp, "", "  ")
+		writeJSON(c, 200, string(b)+"\n")
 
 	case method == "GET" && path == "/map":
 		st.Mu.RLock()
 		type robotView struct{ ID, X, Y int }
 		robots := make([]robotView, 0, len(st.Robots))
 		for _, rb := range st.Robots {
-			robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y})
+			robots = append(robots, robotView(rb))
 		}
 		resp := map[string]any{
 			"width":  st.Width,
@@ -158,8 +165,8 @@ func handle(c net.Conn, st *State) {
 			"robots": robots,
 		}
 		st.Mu.RUnlock()
-		b, _ := json.Marshal(resp)
-		writeJSON(c, 200, string(b))
+		b, _ := json.MarshalIndent(resp, "", "  ")
+		writeJSON(c, 200, string(b)+"\n")
 
 	case method == "POST" && path == "/robot":
 		var req struct{ X, Y *int }
