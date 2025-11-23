@@ -96,7 +96,7 @@ func RunRandomWalk(ctx context.Context, r *RegResp, conn *net.UDPConn) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,6 +170,15 @@ func handle(c net.Conn, st *State) {
 		b, _ := json.MarshalIndent(resp, "", "  ")
 		writeJSON(c, 200, string(b)+"\n")
 
+	case method == "GET" && path == "/live-map":
+		path := filepath.Join("internal", "coordinator", "live_map.html")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			writeText(c, 500, "could not load live_map.html")
+			return
+		}
+		writeHTML(c, 200, string(b))
+
 	case method == "POST" && path == "/robot":
 		var req struct{ X, Y *int }
 		if strings.TrimSpace(body) != "" {
@@ -209,5 +220,10 @@ func writeText(c net.Conn, code int, body string) {
 
 func writeJSON(c net.Conn, code int, body string) {
 	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		code, len(body), body)
+}
+
+func writeHTML(c net.Conn, code int, body string) {
+	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
 }
