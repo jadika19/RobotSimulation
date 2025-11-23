@@ -27,7 +27,6 @@ type State struct {
 	Height int
 }
 
-
 var St = &State{
 	NextID: 1,
 	Robots: make(map[int]Robot),
@@ -52,13 +51,15 @@ func UDPListen(addr string, st *State) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer conn.Close()
 	log.Println("udp listening on", addr)
 
 	buf := make([]byte, 256)
 	for {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			continue
+			log.Printf("UDP read error: %v", err)
+			return
 		}
 		msg := strings.TrimSpace(string(buf[:n])) // expected: "id,x,y"
 		parts := strings.Split(msg, ",")
