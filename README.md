@@ -64,7 +64,17 @@ docker-compose up
 - Coordinator lauscht auf UDP 9001 für Positionsupdates
 - Detector verbindet sich automatisch über interne Docker-Namen
 
-3. **Stoppen aller Services:**
+3. **Zusätzliche Roboter starten:**
+
+Um einen zusätzlichen Roboter zu starten, während die Services bereits laufen:
+
+```bash
+docker run --rm --network compose_default compose-detector
+```
+
+Dies startet einen neuen Detector-Container, der sich automatisch registriert und beginnt, sich zu bewegen.
+
+4. **Stoppen aller Services:**
 
 ```bash
 docker-compose down

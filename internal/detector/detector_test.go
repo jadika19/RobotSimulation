@@ -1,6 +1,7 @@
 package detector_test
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -37,7 +38,7 @@ func TestRegister(t *testing.T) {
 
 func TestRunRandomWalk_UDP(t *testing.T) {
 	// Einfacher UDP-Server zum Auffangen der Nachrichten
-	addr := "127.0.0.1:0" 
+	addr := "127.0.0.1:0"
 	pc, err := net.ListenPacket("udp", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -72,24 +73,24 @@ func TestRunRandomWalk_UDP(t *testing.T) {
 	}
 	defer conn.Close()
 
-	detector.RunRandomWalk(r, conn)
+	detector.RunRandomWalk(context.Background(), r, conn)
 
 	wg.Wait()
 }
 
 func BenchmarkRandomWalkStep(b *testing.B) {
 	r := &detector.RegResp{
-    ID:     1,
-    Width:  5,
-    Height: 5,
-    Start: struct {
-        X int `json:"x"`
-        Y int `json:"y"`
-    }{
-        X: 2,
-        Y: 2,
-    },
-}
+		ID:     1,
+		Width:  5,
+		Height: 5,
+		Start: struct {
+			X int `json:"x"`
+			Y int `json:"y"`
+		}{
+			X: 2,
+			Y: 2,
+		},
+	}
 
 	addr := "127.0.0.1:0"
 	pc, err := net.ListenPacket("udp", addr)
