@@ -1,13 +1,14 @@
 package coordinator_test
 
 import (
-	"strconv"
 	"encoding/json"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
 	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/coordinator"
 )
 
@@ -51,7 +52,7 @@ func TestRegisterRobotWithBody(t *testing.T) {
 	testState.Mu.Unlock()
 
 	body := `{"x":2,"y":3}`
-	req := "POST /robot HTTP/1.1\r\nContent-Length: " + 
+	req := "POST /robot HTTP/1.1\r\nContent-Length: " +
 		strconv.Itoa(len(body)) + "\r\n\r\n" + body
 	resp := handleTestRequest(req, t)
 
@@ -83,8 +84,12 @@ func TestGetStatus(t *testing.T) {
 	var out map[string]interface{}
 	json.Unmarshal([]byte(resp[strings.Index(resp, "{"):]), &out)
 
-	if int(out["robots"].(float64)) != 2 {
-		t.Errorf("expected 2 robots, got %v", out["robots"])
+	robots, ok := out["robots"].([]interface{})
+	if !ok {
+		t.Fatalf("expected robots to be an array, got %T", out["robots"])
+	}
+	if len(robots) != 2 {
+		t.Errorf("expected 2 robots, got %d", len(robots))
 	}
 }
 
@@ -128,7 +133,7 @@ func BenchmarkRobotRegistration(b *testing.B) {
 	testState.Mu.Unlock()
 
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		testState.Mu.Lock()
 		id := testState.NextID

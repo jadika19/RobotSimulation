@@ -142,7 +142,7 @@ curl -X GET http://localhost:8080/map
 curl -X POST http://localhost:8080/robot -H "Content-Type: application/json" -d '{"x":2,"y":3}'
 ```
 
-Hinweis: Detectors laufen für 100 Schritte (~20 Sekunden) und senden Updates alle 200ms.
+Hinweis: Detectors laufen für 100 Schritte (~50 Sekunden) und senden Updates alle 500ms.
 
 ## Tests
 
