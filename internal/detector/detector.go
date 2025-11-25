@@ -2,12 +2,16 @@ package detector
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
@@ -28,6 +32,16 @@ type RegResp struct {
 // Run startet den gesamten Detektor-Workflow
 // Diese Funktion wird aus main.go aufgerufen
 func Run(coordHTTP, udpAddr string) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
 	out, err := Register(coordHTTP)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
@@ -42,7 +56,7 @@ func Run(coordHTTP, udpAddr string) error {
 	}
 	defer udpConn.Close()
 
-	RunRandomWalk(out, udpConn)
+	RunRandomWalk(ctx, out, udpConn)
 	return nil
 }
 
@@ -66,13 +80,24 @@ func ConnectUDP(addr string) (*net.UDPConn, error) {
 
 // ---------- Walking + Senden ----------
 
-func RunRandomWalk(r *RegResp, conn *net.UDPConn) {
+func RunRandomWalk(ctx context.Context, r *RegResp, conn *net.UDPConn) {
 	x, y := r.Start.X, r.Start.Y
 
 	for i := 0; i < 100; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		x, y = StepRandom(x, y, r.Width, r.Height)
 		fmt.Fprintf(conn, "%d,%d,%d", r.ID, x, y)
-		time.Sleep(200 * time.Millisecond)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
 }
 

@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,7 +29,6 @@ type State struct {
 	Width  int
 	Height int
 }
-
 
 var St = &State{
 	NextID: 1,
@@ -52,13 +54,15 @@ func UDPListen(addr string, st *State) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer conn.Close()
 	log.Println("udp listening on", addr)
 
 	buf := make([]byte, 256)
 	for {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			continue
+			log.Printf("UDP read error: %v", err)
+			return
 		}
 		msg := strings.TrimSpace(string(buf[:n])) // expected: "id,x,y"
 		parts := strings.Split(msg, ",")
@@ -130,7 +134,11 @@ func handle(c net.Conn, st *State) {
 		n, _ := strconv.Atoi(cl)
 		if n > 0 {
 			buf := make([]byte, n)
-			_, _ = r.Read(buf)
+			_, err = io.ReadFull(r, buf)
+			if err != nil {
+				log.Printf("Fehler beim Lesen des Bodys: %v", err)
+				return
+			}
 			body = string(buf)
 		}
 	}
@@ -138,18 +146,25 @@ func handle(c net.Conn, st *State) {
 	switch {
 	case method == "GET" && path == "/status":
 		st.Mu.RLock()
-		count := len(st.Robots)
+		type robotView struct{ ID, X, Y int }
+		robots := make([]robotView, 0, len(st.Robots))
+		for _, rb := range st.Robots {
+			robots = append(robots, robotView(rb))
+		}
+		resp := map[string]any{
+			"ok":     true,
+			"robots": robots,
+		}
 		st.Mu.RUnlock()
-		writeJSON(c, 200, fmt.Sprintf(`{"ok":true,"robots":%d}`, count))
-		// TODO: Positionen der Roboter ausgeben
-		// optional: Karte mit Positionen der Roboter ausgeben
+		b, _ := json.MarshalIndent(resp, "", "  ")
+		writeJSON(c, 200, string(b)+"\n")
 
 	case method == "GET" && path == "/map":
 		st.Mu.RLock()
 		type robotView struct{ ID, X, Y int }
 		robots := make([]robotView, 0, len(st.Robots))
 		for _, rb := range st.Robots {
-			robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y})
+			robots = append(robots, robotView(rb))
 		}
 		resp := map[string]any{
 			"width":  st.Width,
@@ -157,8 +172,17 @@ func handle(c net.Conn, st *State) {
 			"robots": robots,
 		}
 		st.Mu.RUnlock()
-		b, _ := json.Marshal(resp)
-		writeJSON(c, 200, string(b))
+		b, _ := json.MarshalIndent(resp, "", "  ")
+		writeJSON(c, 200, string(b)+"\n")
+
+	case method == "GET" && path == "/live-map":
+		path := filepath.Join("internal", "coordinator", "live_map.html")
+		b, err := os.ReadFile(path)
+		if err != nil {
+			writeText(c, 500, "could not load live_map.html")
+			return
+		}
+		writeHTML(c, 200, string(b))
 
 	case method == "POST" && path == "/robot":
 		var req struct{ X, Y *int }
@@ -201,5 +225,10 @@ func writeText(c net.Conn, code int, body string) {
 
 func writeJSON(c net.Conn, code int, body string) {
 	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		code, len(body), body)
+}
+
+func writeHTML(c net.Conn, code int, body string) {
+	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
 }
