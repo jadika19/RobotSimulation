@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -133,7 +134,11 @@ func handle(c net.Conn, st *State) {
 		n, _ := strconv.Atoi(cl)
 		if n > 0 {
 			buf := make([]byte, n)
-			_, _ = r.Read(buf)
+			_, err = io.ReadFull(r, buf)
+			if err != nil {
+				log.Printf("Fehler beim Lesen des Bodys: %v", err)
+				return
+			}
 			body = string(buf)
 		}
 	}
