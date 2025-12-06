@@ -91,25 +91,81 @@ func OpenUDPConnection(addr string) (*net.UDPConn, error) {
 }
 
 func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn) {
-	x, y := r.Start.X, r.Start.Y
+    x, y := r.Start.X, r.Start.Y
+    width, height := r.Width, r.Height
 
-	for i := 0; i < 100; i++ {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+    forward := true // Richtung des gesamten Ablaufs
 
-		x, y = TakeOneStep(x, y, r.Width, r.Height)
-		fmt.Fprintf(conn, "%d,%d,%d", r.ID, x, y)
+    for i := 0; i < 100; i++ {
+        select {
+        case <-ctx.Done():
+            return
+        default:
+        }
 
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
+        fmt.Fprintf(conn, "%d,%d,%d", r.ID, x, y)
+
+        // Warteintervall
+        select {
+        case <-ctx.Done():
+            return
+        case <-time.After(500 * time.Millisecond):
+        }
+
+        // Bewegung je nach Richtung
+        if forward {
+            // Zick-Zack nach unten
+            if y%2 == 0 { // gerade Zeile -> rechts laufen
+                if x < width-1 {
+                    x++
+                } else { // rechts angekommen
+                    if y < height-1 {
+                        y++
+                    } else {
+                        // Unten rechts angekommen -> Richtung umkehren
+                        forward = false
+                    }
+                }
+            } else { // ungerade Zeile -> links laufen
+                if x > 0 {
+                    x--
+                } else { // links angekommen
+                    if y < height-1 {
+                        y++
+                    } else {
+                        forward = false
+                    }
+                }
+            }
+
+        } else {
+            // Zick-Zack nach oben (Rückweg)
+            if y%2 == 0 { // gerade Zeile -> rechts laufen (umgekehrt Muster)
+                if x > 0 {
+                    x--
+                } else {
+                    if y > 0 {
+                        y--
+                    } else {
+                        // Oben links angekommen -> wieder vorwärts
+                        forward = true
+                    }
+                }
+            } else { // ungerade Zeile -> links laufen
+                if x < width-1 {
+                    x++
+                } else {
+                    if y > 0 {
+                        y--
+                    } else {
+                        forward = true
+                    }
+                }
+            }
+        }
+    }
 }
+
 
 func TakeOneStep(x, y, width, height int) (int, int) {
 	switch rand.Intn(4) {
