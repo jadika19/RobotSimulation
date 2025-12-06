@@ -35,7 +35,7 @@ func handleTestRequest(request string, t *testing.T) string {
 	}()
 
 	// Handler
-	go coordinator.HandleHTTP(server, testState)
+	go coordinator.HandleHTTPRequest(server, testState)
 
 	// Lese Response
 	buf := make([]byte, 1024)
@@ -103,7 +103,7 @@ func TestUDPUpdate(t *testing.T) {
 	}
 	testState.Mu.Unlock()
 
-	go coordinator.UDPListen(":9999", testState)
+	go coordinator.StartUDPListener(":9999", testState)
 	time.Sleep(100 * time.Millisecond) // Listener starten
 
 	conn, err := net.Dial("udp", "127.0.0.1:9999")

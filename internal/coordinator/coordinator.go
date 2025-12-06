@@ -39,57 +39,51 @@ var St = &State{
 
 // ---------- Öffentliche Funktionen ----------
 
-// HandleHTTP ist public, damit Tests HTTP-Requests simulieren können
-func HandleHTTP(c net.Conn, st *State) {
-	handle(c, st)
-}
-
-// UDPListen ist public, damit Tests UDP-Nachrichten senden können
-func UDPListen(addr string, st *State) {
+func StartUDPListener(addr string, st *State) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	conn, err := net.ListenUDP("udp", udpAddr)
+	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer conn.Close()
+	defer udpConn.Close()
 	log.Println("udp listening on", addr)
+	HandleUDPMessages(st, udpConn)
+}
 
+// HandleUDPMessages ist public, damit Tests UDP-Nachrichten senden können
+func HandleUDPMessages(st *State, udpConn *net.UDPConn) {
 	buf := make([]byte, 256)
 	for {
-		n, _, err := conn.ReadFromUDP(buf)
+		// UDP-Nachricht lesen
+		n, _, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
 			log.Printf("UDP read error: %v", err)
 			return
 		}
+		// Nachricht parsen
 		msg := strings.TrimSpace(string(buf[:n])) // expected: "id,x,y"
 		parts := strings.Split(msg, ",")
 		if len(parts) != 3 {
 			continue
 		}
-
+		// ID und Koordinaten extrahieren
 		id, err1 := strconv.Atoi(parts[0])
 		x, err2 := strconv.Atoi(parts[1])
 		y, err3 := strconv.Atoi(parts[2])
 		if err1 != nil || err2 != nil || err3 != nil {
 			continue
 		}
-
+		// Koordinaten begrenzen
+		x = clamp(x, 0, st.Width-1)
+		y = clamp(y, 0, st.Height-1)
+		// Roboter-Position aktualisieren
 		st.Mu.Lock()
 		if rb, ok := st.Robots[id]; ok {
-			if x < 0 {
-				x = 0
-			} else if x >= st.Width {
-				x = st.Width - 1
-			}
-			if y < 0 {
-				y = 0
-			} else if y >= st.Height {
-				y = st.Height - 1
-			}
-			rb.X, rb.Y = x, y
+			rb.X = x
+			rb.Y = y
 			st.Robots[id] = rb
 			fmt.Printf("Robot %d moved to (%d, %d)\n", id, x, y)
 		}
@@ -97,126 +91,38 @@ func UDPListen(addr string, st *State) {
 	}
 }
 
-// ---------- Private Funktionen ----------
-
-func handle(c net.Conn, st *State) {
+func HandleHTTPRequest(c net.Conn, st *State) {
 	defer c.Close()
 	r := bufio.NewReader(c)
 
-	line, err := r.ReadString('\n')
+	method, path, headerLines, err := readHTTPHeader(r)
 	if err != nil {
-		return
-	}
-	line = strings.TrimRight(line, "\r\n")
-	parts := strings.Split(line, " ")
-	if len(parts) < 3 {
 		writeText(c, 400, "Bad Request")
 		return
 	}
-	method, path := parts[0], parts[1]
-
-	headers := map[string]string{}
-	for {
-		h, _ := r.ReadString('\n')
-		h = strings.TrimRight(h, "\r\n")
-		if h == "" {
-			break
-		}
-		if i := strings.Index(h, ":"); i > 0 {
-			k := strings.ToLower(strings.TrimSpace(h[:i]))
-			v := strings.TrimSpace(h[i+1:])
-			headers[k] = v
-		}
-	}
 
 	var body string
-	if cl, ok := headers["content-length"]; ok {
-		n, _ := strconv.Atoi(cl)
-		if n > 0 {
-			buf := make([]byte, n)
-			_, err = io.ReadFull(r, buf)
-			if err != nil {
-				log.Printf("Fehler beim Lesen des Bodys: %v", err)
-				return
-			}
-			body = string(buf)
-		}
+	if method == "POST" {
+		body = readHTTPBody(r, headerLines["content-length"])
 	}
-
+	
 	switch {
 	case method == "GET" && path == "/status":
-		st.Mu.RLock()
-		type robotView struct{ ID, X, Y int }
-		robots := make([]robotView, 0, len(st.Robots))
-		for _, rb := range st.Robots {
-			robots = append(robots, robotView(rb))
-		}
-		resp := map[string]any{
-			"ok":     true,
-			"robots": robots,
-		}
-		st.Mu.RUnlock()
-		b, _ := json.MarshalIndent(resp, "", "  ")
-		writeJSON(c, 200, string(b)+"\n")
-
+		handleStatusRequest(c, st)
 	case method == "GET" && path == "/map":
-		st.Mu.RLock()
-		type robotView struct{ ID, X, Y int }
-		robots := make([]robotView, 0, len(st.Robots))
-		for _, rb := range st.Robots {
-			robots = append(robots, robotView(rb))
-		}
-		resp := map[string]any{
-			"width":  st.Width,
-			"height": st.Height,
-			"robots": robots,
-		}
-		st.Mu.RUnlock()
-		b, _ := json.MarshalIndent(resp, "", "  ")
-		writeJSON(c, 200, string(b)+"\n")
-
+		handleMapRequest(c, st)
 	case method == "GET" && path == "/live-map":
-		path := filepath.Join("internal", "coordinator", "live_map.html")
-		b, err := os.ReadFile(path)
-		if err != nil {
-			writeText(c, 500, "could not load live_map.html")
-			return
-		}
-		writeHTML(c, 200, string(b))
-
+		handleLiveMapRequest(c)
 	case method == "POST" && path == "/robot":
-		var req struct{ X, Y *int }
-		if strings.TrimSpace(body) != "" {
-			_ = json.Unmarshal([]byte(body), &req)
-		}
-
-		st.Mu.Lock()
-		id := st.NextID
-		st.NextID++
-		x, y := 0, 0
-		if req.X != nil {
-			x = *req.X
-		}
-		if req.Y != nil {
-			y = *req.Y
-		}
-		st.Robots[id] = Robot{ID: id, X: x, Y: y}
-		resp := map[string]any{
-			"id":     id,
-			"width":  st.Width,
-			"height": st.Height,
-			"start":  map[string]int{"x": x, "y": y},
-		}
-		b, _ := json.Marshal(resp)
-		st.Mu.Unlock()
-		writeJSON(c, 200, string(b))
-
+		handleRobotRegistration(c, st, body)
 	case method == "GET" || method == "POST":
 		writeText(c, 404, "Not Found")
 	default:
 		writeText(c, 405, "Method Not Allowed")
 	}
 }
+
+// ---------- Private Funktionen ----------
 
 func writeText(c net.Conn, code int, body string) {
 	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
@@ -231,4 +137,129 @@ func writeJSON(c net.Conn, code int, body string) {
 func writeHTML(c net.Conn, code int, body string) {
 	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
+}
+
+func clamp(val, min, max int) int {
+	if val < min {
+		return min
+	} else if val > max {
+		return max
+	} else {
+		return val
+	}
+}
+
+func readHTTPHeader(r *bufio.Reader) (string, string, map[string]string, error) {
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return "", "", nil, err
+	}
+	line = strings.TrimRight(line, "\r\n")
+	parts := strings.Split(line, " ")
+	if len(parts) < 3 {
+		return "", "", nil, fmt.Errorf("bad request")
+	}
+	method, path := parts[0], parts[1]
+
+	headerLines := map[string]string{}
+	for {
+		h, _ := r.ReadString('\n')
+		h = strings.TrimRight(h, "\r\n")
+		if h == "" {
+			break
+		}
+		if i := strings.Index(h, ":"); i > 0 {
+			k := strings.ToLower(strings.TrimSpace(h[:i]))
+			v := strings.TrimSpace(h[i+1:])
+			headerLines[k] = v
+		}
+	}
+	return method, path, headerLines, nil
+}
+
+func readHTTPBody(r *bufio.Reader, contentLength string) string {
+	n, _ := strconv.Atoi(contentLength)
+	if n <= 0 {
+		return ""
+	}
+
+	buf := make([]byte, n)
+	_, err := io.ReadFull(r, buf)
+	if err != nil {
+		log.Printf("Fehler beim Lesen des Bodys: %v", err)
+		return ""
+	}
+	body := string(buf)
+	return body
+}
+
+func handleStatusRequest(c net.Conn, st *State) {
+	st.Mu.RLock()
+	type robotView struct{ ID, X, Y int }
+	robots := make([]robotView, 0, len(st.Robots))
+	for _, rb := range st.Robots {
+		robots = append(robots, robotView(rb))
+	}
+	resp := map[string]any{
+		"ok":     true,
+		"robots": robots,
+	}
+	st.Mu.RUnlock()
+	b, _ := json.MarshalIndent(resp, "", "  ")
+	writeJSON(c, 200, string(b)+"\n")
+}
+
+func handleMapRequest(c net.Conn, st *State) {
+	st.Mu.RLock()
+	type robotView struct{ ID, X, Y int }
+	robots := make([]robotView, 0, len(st.Robots))
+	for _, rb := range st.Robots {
+		robots = append(robots, robotView(rb))
+	}
+	resp := map[string]any{
+		"width":  st.Width,
+		"height": st.Height,
+		"robots": robots,
+	}
+	st.Mu.RUnlock()
+	b, _ := json.MarshalIndent(resp, "", "  ")
+	writeJSON(c, 200, string(b)+"\n")
+}
+
+func handleLiveMapRequest(c net.Conn) {
+	path := filepath.Join("internal", "coordinator", "live_map.html")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		writeText(c, 500, "could not load live_map.html")
+		return
+	}
+	writeHTML(c, 200, string(b))
+}
+
+func handleRobotRegistration(c net.Conn, st *State, body string) {
+	var req struct{ X, Y *int }
+	if strings.TrimSpace(body) != "" {
+		_ = json.Unmarshal([]byte(body), &req)
+	}
+
+	st.Mu.Lock()
+	id := st.NextID
+	st.NextID++
+	x, y := 0, 0
+	if req.X != nil {
+		x = *req.X
+	}
+	if req.Y != nil {
+		y = *req.Y
+	}
+	st.Robots[id] = Robot{ID: id, X: x, Y: y}
+	resp := map[string]any{
+		"id":     id,
+		"width":  st.Width,
+		"height": st.Height,
+		"start":  map[string]int{"x": x, "y": y},
+	}
+	b, _ := json.Marshal(resp)
+	st.Mu.Unlock()
+	writeJSON(c, 200, string(b))
 }
