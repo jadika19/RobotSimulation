@@ -1,7 +1,6 @@
 package detector
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,10 +26,8 @@ type RegResp struct {
 	} `json:"start"`
 }
 
-// ---------- Öffentliche API ----------
+// ---------- Öffentliche Funktionen ----------
 
-// Run startet den gesamten Detektor-Workflow
-// Diese Funktion wird aus main.go aufgerufen
 func Run(coordHTTP, udpAddr string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -42,35 +39,50 @@ func Run(coordHTTP, udpAddr string) error {
 		cancel()
 	}()
 
-	out, err := Register(coordHTTP)
+	regResp, err := SendHTTPRegistrationRequest(coordHTTP)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
 
 	log.Printf("detector id=%d grid=%dx%d start=(%d,%d)",
-		out.ID, out.Width, out.Height, out.Start.X, out.Start.Y)
+		regResp.ID, regResp.Width, regResp.Height, regResp.Start.X, regResp.Start.Y)
 
-	udpConn, err := ConnectUDP(udpAddr)
+	udpConn, err := OpenUDPConnection(udpAddr)
 	if err != nil {
 		return err
 	}
 	defer udpConn.Close()
 
-	RunRandomWalk(ctx, out, udpConn)
+	Walk(ctx, regResp, udpConn)
 	return nil
 }
 
-// ---------- Registrierung ----------
+func SendHTTPRegistrationRequest(addr string) (*RegResp, error) {
+	// HTTP-Request erstellen
+	req, err := http.NewRequest("POST", addr+"/robot", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// TCP-Verbindung aufbauen und Request senden
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-func Register(coordHTTP string) (*RegResp, error) {
-	var out RegResp
-	err := postJSON(coordHTTP+"/robot", nil, &out)
-	return &out, err
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status: %s", resp.Status)
+	}
+	// Response parsen
+	var regResp RegResp
+	if err := json.NewDecoder(resp.Body).Decode(&regResp); err != nil {
+		return nil, err
+	}
+	return &regResp, nil
 }
 
-// ---------- UDP ----------
-
-func ConnectUDP(addr string) (*net.UDPConn, error) {
+func OpenUDPConnection(addr string) (*net.UDPConn, error) {
 	conn, err := net.Dial("udp", addr)
 	if err != nil {
 		return nil, err
@@ -78,9 +90,7 @@ func ConnectUDP(addr string) (*net.UDPConn, error) {
 	return conn.(*net.UDPConn), nil
 }
 
-// ---------- Walking + Senden ----------
-
-func RunRandomWalk(ctx context.Context, r *RegResp, conn *net.UDPConn) {
+func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn) {
 	x, y := r.Start.X, r.Start.Y
 
 	for i := 0; i < 100; i++ {
@@ -90,7 +100,7 @@ func RunRandomWalk(ctx context.Context, r *RegResp, conn *net.UDPConn) {
 		default:
 		}
 
-		x, y = StepRandom(x, y, r.Width, r.Height)
+		x, y = TakeOneStep(x, y, r.Width, r.Height)
 		fmt.Fprintf(conn, "%d,%d,%d", r.ID, x, y)
 
 		select {
@@ -101,7 +111,7 @@ func RunRandomWalk(ctx context.Context, r *RegResp, conn *net.UDPConn) {
 	}
 }
 
-func StepRandom(x, y, width, height int) (int, int) {
+func TakeOneStep(x, y, width, height int) (int, int) {
 	switch rand.Intn(4) {
 	case 0:
 		if y > 0 {
@@ -121,27 +131,4 @@ func StepRandom(x, y, width, height int) (int, int) {
 		}
 	}
 	return x, y
-}
-
-// ---------- Hilfsfunktion für POST ----------
-
-func postJSON(url string, body any, out any) error {
-	var buf *bytes.Buffer
-	if body != nil {
-		b, _ := json.Marshal(body)
-		buf = bytes.NewBuffer(b)
-	} else {
-		buf = bytes.NewBuffer(nil)
-	}
-
-	req, _ := http.NewRequest("POST", url, buf)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-
-	defer resp.Body.Close()
-	return json.NewDecoder(resp.Body).Decode(out)
 }

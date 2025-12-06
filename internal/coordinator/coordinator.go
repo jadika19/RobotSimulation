@@ -102,8 +102,8 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 	}
 
 	var body string
-	if method == "POST" {
-		body = readHTTPBody(r, headerLines["content-length"])
+	if cl, ok := headerLines["content-length"]; ok {
+		body = readHTTPBody(r, cl)
 	}
 	
 	switch {

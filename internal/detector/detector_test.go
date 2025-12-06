@@ -13,7 +13,7 @@ import (
 	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/detector"
 )
 
-func TestRegister(t *testing.T) {
+func TestHTTPRegistration(t *testing.T) {
 	// Mock Coordinator HTTP Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := detector.RegResp{
@@ -27,7 +27,7 @@ func TestRegister(t *testing.T) {
 	}))
 	defer server.Close()
 
-	out, err := detector.Register(server.URL)
+	out, err := detector.SendHTTPRegistrationRequest(server.URL)
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestRegister(t *testing.T) {
 	}
 }
 
-func TestRunRandomWalk_UDP(t *testing.T) {
+func TestWalk(t *testing.T) {
 	// Einfacher UDP-Server zum Auffangen der Nachrichten
 	addr := "127.0.0.1:0"
 	pc, err := net.ListenPacket("udp", addr)
@@ -67,18 +67,18 @@ func TestRunRandomWalk_UDP(t *testing.T) {
 		}
 	}()
 
-	conn, err := detector.ConnectUDP(udpAddr)
+	conn, err := detector.OpenUDPConnection(udpAddr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
 
-	detector.RunRandomWalk(context.Background(), r, conn)
+	detector.Walk(context.Background(), r, conn)
 
 	wg.Wait()
 }
 
-func BenchmarkRandomWalkStep(b *testing.B) {
+func BenchmarkStepPerformance(b *testing.B) {
 	r := &detector.RegResp{
 		ID:     1,
 		Width:  5,
@@ -100,7 +100,7 @@ func BenchmarkRandomWalkStep(b *testing.B) {
 	defer pc.Close()
 	udpAddr := pc.LocalAddr().String()
 
-	conn, err := detector.ConnectUDP(udpAddr)
+	conn, err := detector.OpenUDPConnection(udpAddr)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -108,6 +108,6 @@ func BenchmarkRandomWalkStep(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		detector.StepRandom(r.Start.X, r.Start.Y, r.Width, r.Height)
+		detector.TakeOneStep(r.Start.X, r.Start.Y, r.Width, r.Height)
 	}
 }
