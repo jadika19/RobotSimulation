@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"math/rand"
+	"time"
 )
 
 // ---------- Datenstrukturen ----------
@@ -242,15 +244,20 @@ func handleRobotRegistration(c net.Conn, st *State, body string) {
 		_ = json.Unmarshal([]byte(body), &req)
 	}
 
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	st.Mu.Lock()
 	id := st.NextID
 	st.NextID++
 	x, y := 0, 0
 	if req.X != nil {
 		x = *req.X
+	} else {
+		x = rng.Intn(st.Width)
 	}
 	if req.Y != nil {
 		y = *req.Y
+	} else {
+		y = rng.Intn(st.Height)
 	}
 	st.Robots[id] = Robot{ID: id, X: x, Y: y}
 	resp := map[string]any{
