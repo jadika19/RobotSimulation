@@ -74,6 +74,14 @@ docker run --rm --network compose_default compose-detector
 
 Dies startet einen neuen Detector-Container, der sich automatisch registriert und beginnt, sich zu bewegen.
 
+oder
+
+```bash
+docker compose up -d --scale detektor=4
+```
+
+Dies erhöht die Anzahl der Detector-Container dynamisch und bietet daher eine saubere Erweiterung der Compose.
+
 4. **Stoppen aller Services:**
 
 ```bash
