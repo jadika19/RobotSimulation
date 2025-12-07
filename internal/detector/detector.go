@@ -94,6 +94,7 @@ func OpenUDPConnection(addr string) (*net.UDPConn, error) {
 func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn, tcpAddr string) {
 	x, y := r.Start.X, r.Start.Y
 	width, height := r.Width, r.Height
+	reported := make(map[string]bool)
 
 	forward := true // Richtung des gesamten Ablaufs
 
@@ -106,14 +107,17 @@ func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn, tcpAddr string) {
 		// Position über UDP senden
 		fmt.Fprintf(conn, "%d,%d,%d", r.ID, x, y)
 
-		// Ereignis suchen und an Koordinator senden
-		found, eventType := searchForEventAndDetermineType()
-		if found {
-			go func() {
-				if err := SendHTTPEvent(tcpAddr, eventType, x, y); err != nil {
-					log.Printf("failed to send event %s at (%d,%d): %v", eventType, x, y, err)
-				}
-			}()
+		// Prüfen, ob an dieser Stelle ein Problem liegt
+		if eventType, found := CheckForProblem(tcpAddr, x, y); found {
+			key := fmt.Sprintf("%d,%d", x, y)
+			if !reported[key] {
+				reported[key] = true
+				go func(px, py int, et string) {
+					if err := SendHTTPEvent(tcpAddr, et, px, py); err != nil {
+						log.Printf("failed to send event %s at (%d,%d): %v", et, px, py, err)
+					}
+				}(x, y, eventType)
+			}
 		}
 
 		// Warteintervall
@@ -220,15 +224,29 @@ func SendHTTPEvent(addr, event string, x, y int) error {
 	return nil
 }
 
-func searchForEventAndDetermineType() (bool, string) {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	// 5% Chance, ein Ereignis zu finden
-	if rng.Intn(100) > 5 {
-		return false, ""
+func CheckForProblem(addr string, x, y int) (string, bool) {
+	reqBody := fmt.Sprintf(`{"x":%d,"y":%d}`, x, y)
+	req, err := http.NewRequest("POST", addr+"/problem-at", strings.NewReader(reqBody))
+	if err != nil {
+		return "", false
 	}
-	// 50% Chance für Defekt oder Schmutz
-	if rng.Intn(2) == 0 {
-		return true, "defect"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(reqBody)))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", false
 	}
-	return true, "dirt"
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", false
+	}
+	var res struct {
+		Present bool   `json:"present"`
+		Type    string `json:"type"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", false
+	}
+	return res.Type, res.Present
 }

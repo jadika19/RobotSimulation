@@ -37,11 +37,22 @@
         color: #fff;
         font-weight: bold;
       }
+
+      .dirt {
+        background: #0b5d2f;
+      }
+
+      .defect {
+        background: #b22222;
+      }
     </style>
   </head>
   <body>
     <h1>Live Robot Map (20x20)</h1>
-    <p>Data source: <code>/map</code>. Polling every 500ms.</p>
+    <p>
+      Data source: <code>/map</code>. Polling every 500ms. Left click = dirt
+      (green), right click = defect (red).
+    </p>
     <div id="grid"></div>
     <script>
       const gridEl = document.getElementById("grid");
@@ -54,6 +65,8 @@
             const div = document.createElement("div");
             div.className = "cell";
             div.textContent = "";
+            div.dataset.x = x;
+            div.dataset.y = y;
             gridEl.appendChild(div);
             cells.push(div);
           }
@@ -68,7 +81,7 @@
           const res = await fetch("/map");
           if (!res.ok) return;
           const data = await res.json();
-          const { width, height, robots } = data;
+          const { width, height, robots, problems } = data;
 
           if (!cells || cells.length !== width * height) {
             cells = buildEmptyGrid(width, height);
@@ -80,13 +93,31 @@
             cell.textContent = "";
           }
 
+          // place problems first
+          if (Array.isArray(problems)) {
+            problems.forEach((p) => {
+              const px = p.x ?? p.X; // handle lower-case JSON keys from Go
+              const py = p.y ?? p.Y;
+              const pt = p.type ?? p.Type;
+              if (px < 0 || py < 0 || px >= width || py >= height) return;
+              const i = py * width + px;
+              const cell = cells[i];
+              if (!cell) return;
+              if (pt === "dirt") {
+                cell.classList.add("dirt");
+              } else if (pt === "defect") {
+                cell.classList.add("defect");
+              }
+            });
+          }
+
           // place robots
           robots.forEach((r, idx) => {
             if (r.X < 0 || r.Y < 0 || r.X >= width || r.Y >= height) return;
             const i = r.Y * width + r.X;
             const cell = cells[i];
             if (!cell) return;
-            cell.className = "cell robot";
+            cell.classList.add("robot");
             // show first robot ID or "+" if multiple
             if (cell.textContent === "") {
               cell.textContent = String(r.ID);
@@ -101,6 +132,28 @@
 
       update();
       setInterval(update, 500);
+
+      async function sendProblem(x, y, type) {
+        await fetch("/problem", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ x, y, type }),
+        });
+        update();
+      }
+
+      gridEl.addEventListener("click", (ev) => {
+        const cell = ev.target.closest(".cell");
+        if (!cell || cell.dataset.x === undefined) return;
+        sendProblem(Number(cell.dataset.x), Number(cell.dataset.y), "dirt");
+      });
+
+      gridEl.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        const cell = ev.target.closest(".cell");
+        if (!cell || cell.dataset.x === undefined) return;
+        sendProblem(Number(cell.dataset.x), Number(cell.dataset.y), "defect");
+      });
     </script>
   </body>
 </html>
