@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"math/rand"
 	"time"
 )
 
@@ -107,7 +107,7 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 	if cl, ok := headerLines["content-length"]; ok {
 		body = readHTTPBody(r, cl)
 	}
-	
+
 	switch {
 	case method == "GET" && path == "/status":
 		handleStatusRequest(c, st)
@@ -117,6 +117,9 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 		handleLiveMapRequest(c)
 	case method == "POST" && path == "/robot":
 		handleRobotRegistration(c, st, body)
+	case method == "POST" && path == "/event":
+		handleEvent(c, st, body)
+		
 	case method == "GET" || method == "POST":
 		writeText(c, 404, "Not Found")
 	default:
@@ -269,4 +272,9 @@ func handleRobotRegistration(c net.Conn, st *State, body string) {
 	b, _ := json.Marshal(resp)
 	st.Mu.Unlock()
 	writeJSON(c, 200, string(b))
+}
+
+func handleEvent(c net.Conn, st *State, body string) {
+	// dummy
+	writeText(c, 200, "Event received")
 }

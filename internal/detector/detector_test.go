@@ -73,14 +73,23 @@ func TestWalk(t *testing.T) {
 	}
 	defer conn.Close()
 
-	detector.Walk(context.Background(), r, conn)
+	// start a tiny HTTP server to accept /event POSTs
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == "POST" && req.URL.Path == "/event" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	detector.Walk(context.Background(), r, conn, srv.URL)
 
 	wg.Wait()
 }
 
 func BenchmarkStepPerformance(b *testing.B) {
 	r := &detector.RegResp{
-		ID:     1,
 		Width:  5,
 		Height: 5,
 		Start: struct {
