@@ -33,9 +33,20 @@
         color: #eee;
       }
       .robot {
-        background: #2e86de;
         color: #fff;
         font-weight: bold;
+      }
+
+      .robot-detector {
+        background: #2e86de;
+      }
+
+      .robot-cleaner {
+        background: #9b59b6;
+      }
+
+      .robot-repair {
+        background: #e67e22;
       }
 
       .dirt {
@@ -52,6 +63,47 @@
     <p>
       Data source: <code>/map</code>. Polling every 500ms. Left click = dirt
       (green), right click = defect (red).
+    </p>
+    <p style="font-size: 12px">
+      <span
+        style="
+          background: #2e86de;
+          padding: 2px 8px;
+          border-radius: 3px;
+          margin-right: 8px;
+        "
+        >Detector</span
+      >
+      <span
+        style="
+          background: #9b59b6;
+          padding: 2px 8px;
+          border-radius: 3px;
+          margin-right: 8px;
+        "
+        >Cleaner</span
+      >
+      <span
+        style="
+          background: #e67e22;
+          padding: 2px 8px;
+          border-radius: 3px;
+          margin-right: 8px;
+        "
+        >Repair</span
+      >
+      <span
+        style="
+          background: #0b5d2f;
+          padding: 2px 8px;
+          border-radius: 3px;
+          margin-right: 8px;
+        "
+        >Dirt</span
+      >
+      <span style="background: #b22222; padding: 2px 8px; border-radius: 3px"
+        >Defect</span
+      >
     </p>
     <div id="grid"></div>
     <script>
@@ -118,6 +170,9 @@
             const cell = cells[i];
             if (!cell) return;
             cell.classList.add("robot");
+            // Add type-specific class for coloring
+            const robotType = r.type || "detector";
+            cell.classList.add("robot-" + robotType);
             // show first robot ID or "+" if multiple
             if (cell.textContent === "") {
               cell.textContent = String(r.ID);

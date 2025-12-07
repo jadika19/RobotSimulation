@@ -19,9 +19,11 @@ import (
 // ---------- Datenstrukturen ----------
 
 type Robot struct {
-	ID int `json:"id"`
-	X  int `json:"x"`
-	Y  int `json:"y"`
+	ID     int    `json:"id"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	Type   string `json:"type"`   // "detector", "cleaner", "repair"
+	Status string `json:"status"` // "idle", "busy"
 }
 
 type State struct {
@@ -224,10 +226,16 @@ func readHTTPBody(r *bufio.Reader, contentLength string) string {
 
 func handleStatusRequest(c net.Conn, st *State) {
 	st.Mu.RLock()
-	type robotView struct{ ID, X, Y int }
+	type robotView struct {
+		ID     int    `json:"ID"`
+		X      int    `json:"X"`
+		Y      int    `json:"Y"`
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
 	robots := make([]robotView, 0, len(st.Robots))
 	for _, rb := range st.Robots {
-		robots = append(robots, robotView(rb))
+		robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y, Type: rb.Type, Status: rb.Status})
 	}
 	resp := map[string]any{
 		"ok":     true,
@@ -240,10 +248,16 @@ func handleStatusRequest(c net.Conn, st *State) {
 
 func handleMapRequest(c net.Conn, st *State) {
 	st.Mu.RLock()
-	type robotView struct{ ID, X, Y int }
+	type robotView struct {
+		ID     int    `json:"ID"`
+		X      int    `json:"X"`
+		Y      int    `json:"Y"`
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
 	robots := make([]robotView, 0, len(st.Robots))
 	for _, rb := range st.Robots {
-		robots = append(robots, robotView(rb))
+		robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y, Type: rb.Type, Status: rb.Status})
 	}
 	type problemView struct {
 		X    int    `json:"x"`
@@ -296,9 +310,10 @@ func handleRobotRegistration(c net.Conn, st *State, body string) {
 	} else {
 		y = rng.Intn(st.Height)
 	}
-	st.Robots[id] = Robot{ID: id, X: x, Y: y}
+	st.Robots[id] = Robot{ID: id, X: x, Y: y, Type: "detector", Status: "busy"}
 	resp := map[string]any{
 		"id":     id,
+		"type":   "detector",
 		"width":  st.Width,
 		"height": st.Height,
 		"start":  map[string]int{"x": x, "y": y},
@@ -382,11 +397,44 @@ func handleProblemAt(c net.Conn, st *State, body string) {
 }
 
 func handleRepairRobotRegistration(c net.Conn, st *State, body string) {
-	// dummy
-	writeText(c, 200, "Repair robot registered")
+	registerServiceBot(c, st, body, "repair")
 }
 
 func handleCleanerRobotRegistration(c net.Conn, st *State, body string) {
-	// dummy
-	writeText(c, 200, "Cleaner robot registered")
+	registerServiceBot(c, st, body, "cleaner")
+}
+
+func registerServiceBot(c net.Conn, st *State, body string, robotType string) {
+	var req struct{ X, Y *int }
+	if strings.TrimSpace(body) != "" {
+		_ = json.Unmarshal([]byte(body), &req)
+	}
+
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	st.Mu.Lock()
+	id := st.NextID
+	st.NextID++
+	x, y := 0, 0
+	if req.X != nil {
+		x = *req.X
+	} else {
+		x = rng.Intn(st.Width)
+	}
+	if req.Y != nil {
+		y = *req.Y
+	} else {
+		y = rng.Intn(st.Height)
+	}
+	st.Robots[id] = Robot{ID: id, X: x, Y: y, Type: robotType, Status: "idle"}
+	resp := map[string]any{
+		"id":     id,
+		"type":   robotType,
+		"width":  st.Width,
+		"height": st.Height,
+		"start":  map[string]int{"x": x, "y": y},
+	}
+	b, _ := json.Marshal(resp)
+	st.Mu.Unlock()
+	log.Printf("%s robot registered: id=%d at (%d,%d)", robotType, id, x, y)
+	writeJSON(c, 200, string(b))
 }
