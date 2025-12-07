@@ -119,7 +119,11 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 		handleRobotRegistration(c, st, body)
 	case method == "POST" && path == "/event":
 		handleEvent(c, st, body)
-		
+	case method == "POST" && path == "/repair-robot":
+		handleRepairRobotRegistration(c, st, body)
+	case method == "POST" && path == "/cleaner-robot":
+		handleCleanerRobotRegistration(c, st, body)
+
 	case method == "GET" || method == "POST":
 		writeText(c, 404, "Not Found")
 	default:
@@ -277,4 +281,14 @@ func handleRobotRegistration(c net.Conn, st *State, body string) {
 func handleEvent(c net.Conn, st *State, body string) {
 	// dummy
 	writeText(c, 200, "Event received")
+}
+
+func handleRepairRobotRegistration(c net.Conn, st *State, body string) {
+	// dummy
+	writeText(c, 200, "Repair robot registered")
+}
+
+func handleCleanerRobotRegistration(c net.Conn, st *State, body string) {
+	// dummy
+	writeText(c, 200, "Cleaner robot registered")
 }
