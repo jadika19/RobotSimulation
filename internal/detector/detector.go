@@ -103,7 +103,7 @@ func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn, tcpAddr string) {
 			return
 		default:
 		}
-
+		// Position über UDP senden
 		fmt.Fprintf(conn, "%d,%d,%d", r.ID, x, y)
 
 		// Ereignis suchen und an Koordinator senden
