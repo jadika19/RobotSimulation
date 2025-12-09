@@ -15,3 +15,25 @@ services:
       - coordinator
     deploy:
       replicas: 3
+
+  cleaner:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/servicebot/Dockerfile
+    depends_on:
+      - coordinator
+    environment:
+      - BOT_TYPE=cleaner
+    deploy:
+      replicas: 2
+
+  repair:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/servicebot/Dockerfile
+    depends_on:
+      - coordinator
+    environment:
+      - BOT_TYPE=repair
+    deploy:
+      replicas: 2
