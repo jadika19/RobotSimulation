@@ -27,27 +27,28 @@ type Robot struct {
 }
 
 type State struct {
-	Mu       sync.RWMutex
-	NextID   int
-	Robots   map[int]Robot
-	Width    int
-	Height   int
-	Problems map[string] Problem
+	Mu            sync.RWMutex
+	NextID        int
+	Robots        map[int]Robot
+	Width         int
+	Height        int
+	WorldProblems map[string]Problem // All user-placed problems (ground truth)
+	KnownProblems map[string]Problem // Only problems reported by detectors
 }
 
 type Problem struct {
 	X    int    `json:"x"`
 	Y    int    `json:"y"`
 	Type string `json:"type"`
-	IsReported bool   `json:"is_reported"`
 }
 
 var St = &State{
-	NextID:   1,
-	Robots:   make(map[int]Robot),
-	Problems: make(map[string]Problem),
-	Width:    20,
-	Height:   20,
+	NextID:        1,
+	Robots:        make(map[int]Robot),
+	WorldProblems: make(map[string]Problem),
+	KnownProblems: make(map[string]Problem),
+	Width:         20,
+	Height:        20,
 }
 
 func init() {
@@ -128,6 +129,8 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 		handleStatusRequest(c, st)
 	case method == "GET" && path == "/map":
 		handleMapRequest(c, st)
+	case method == "GET" && path == "/world-map":
+		handleWorldMapRequest(c, st)
 	case method == "GET" && path == "/live-map":
 		handleLiveMapRequest(c)
 	case method == "POST" && path == "/problem":
@@ -264,11 +267,43 @@ func handleMapRequest(c net.Conn, st *State) {
 		X    int    `json:"x"`
 		Y    int    `json:"y"`
 		Type string `json:"type"`
-		IsReported bool   `json:"is_reported"`
 	}
-	problems := make([]problemView, 0, len(st.Problems))
-	for _, p := range st.Problems {
-		problems = append(problems, problemView(p))
+	problems := make([]problemView, 0, len(st.KnownProblems))
+	for _, p := range st.KnownProblems {
+		problems = append(problems, problemView{X: p.X, Y: p.Y, Type: p.Type})
+	}
+	resp := map[string]any{
+		"width":    st.Width,
+		"height":   st.Height,
+		"robots":   robots,
+		"problems": problems,
+	}
+	st.Mu.RUnlock()
+	b, _ := json.MarshalIndent(resp, "", "  ")
+	writeJSON(c, 200, string(b)+"\n")
+}
+
+func handleWorldMapRequest(c net.Conn, st *State) {
+	st.Mu.RLock()
+	type robotView struct {
+		ID     int    `json:"ID"`
+		X      int    `json:"X"`
+		Y      int    `json:"Y"`
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
+	robots := make([]robotView, 0, len(st.Robots))
+	for _, rb := range st.Robots {
+		robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y, Type: rb.Type, Status: rb.Status})
+	}
+	type problemView struct {
+		X    int    `json:"x"`
+		Y    int    `json:"y"`
+		Type string `json:"type"`
+	}
+	problems := make([]problemView, 0, len(st.WorldProblems))
+	for _, p := range st.WorldProblems {
+		problems = append(problems, problemView{X: p.X, Y: p.Y, Type: p.Type})
 	}
 	resp := map[string]any{
 		"width":    st.Width,
@@ -336,6 +371,10 @@ func handleEvent(c net.Conn, st *State, body string) {
 		return
 	}
 	log.Printf("problem reported: %s at (%d,%d)", req.Event, req.X, req.Y)
+	// Add to KnownProblems (coordinator now knows about this problem)
+	st.Mu.Lock()
+	st.KnownProblems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: req.Event}
+	st.Mu.Unlock()
 	writeText(c, 200, "Event received")
 }
 
@@ -352,7 +391,7 @@ func handleProblemUpsert(c net.Conn, st *State, body string) {
 	typ := strings.ToLower(strings.TrimSpace(req.Type))
 	if typ == "clear" || typ == "" {
 		st.Mu.Lock()
-		delete(st.Problems, coordKey(req.X, req.Y))
+		delete(st.WorldProblems, coordKey(req.X, req.Y))
 		st.Mu.Unlock()
 		writeText(c, 200, "cleared")
 		return
@@ -362,7 +401,7 @@ func handleProblemUpsert(c net.Conn, st *State, body string) {
 		return
 	}
 	st.Mu.Lock()
-	st.Problems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: typ , IsReported: false}
+	st.WorldProblems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: typ}
 	st.Mu.Unlock()
 	writeText(c, 200, "stored")
 }
@@ -381,9 +420,7 @@ func handleProblemAt(c net.Conn, st *State, body string) {
 		return
 	}
 	st.Mu.RLock()
-	pb, ok := st.Problems[coordKey(req.X, req.Y)]
-	pb.IsReported = true
-	st.Problems[coordKey(req.X, req.Y)] = pb
+	pb, ok := st.WorldProblems[coordKey(req.X, req.Y)]
 	st.Mu.RUnlock()
 	resp := map[string]any{
 		"present": ok,
@@ -438,4 +475,3 @@ func registerServiceBot(c net.Conn, st *State, body string, robotType string) {
 	log.Printf("%s robot registered: id=%d at (%d,%d)", robotType, id, x, y)
 	writeJSON(c, 200, string(b))
 }
-
