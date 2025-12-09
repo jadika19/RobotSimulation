@@ -98,3 +98,41 @@ func (bot *ServiceBot) SendPosition() {
 	// Same format as detector: "id,x,y"
 	fmt.Fprintf(bot.udpConn, "%d,%d,%d", bot.ID, bot.X, bot.Y)
 }
+
+func (bot *ServiceBot) MoveTo(x, y int, udpAddr string) error {
+	conn, err := OpenUDPConnection(udpAddr)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	bot.Status = "busy"
+
+	// Bewegung abwechselnd in X- und Y-Richtung
+	for bot.X != x && bot.Y != y {
+		if bot.X < x {
+			bot.X++
+			fmt.Fprintf(conn, "%d,%d,%d,%s", bot.ID, bot.X, bot.Y, bot.Status)
+		} else if bot.X > x {
+			bot.X--
+			fmt.Fprintf(conn, "%d,%d,%d,%s", bot.ID, bot.X, bot.Y, bot.Status)
+		}
+
+		if bot.Y < y {
+			bot.Y++
+			fmt.Fprintf(conn, "%d,%d,%d,%s", bot.ID, bot.X, bot.Y, bot.Status)
+		} else if bot.Y > y {
+			bot.Y--
+			fmt.Fprintf(conn, "%d,%d,%d,%s", bot.ID, bot.X, bot.Y, bot.Status)
+		}
+	}
+	return nil
+}
+
+func OpenUDPConnection(addr string) (*net.UDPConn, error) {
+	conn, err := net.Dial("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return conn.(*net.UDPConn), nil
+}

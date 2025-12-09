@@ -98,7 +98,7 @@ func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn, tcpAddr string) {
 
 	forward := true // Richtung des gesamten Ablaufs
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1000; i++ {
 		select {
 		case <-ctx.Done():
 			return

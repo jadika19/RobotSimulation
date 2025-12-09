@@ -32,13 +32,14 @@ type State struct {
 	Robots   map[int]Robot
 	Width    int
 	Height   int
-	Problems map[string]Problem
+	Problems map[string] Problem
 }
 
 type Problem struct {
 	X    int    `json:"x"`
 	Y    int    `json:"y"`
 	Type string `json:"type"`
+	IsReported bool   `json:"is_reported"`
 }
 
 var St = &State{
@@ -263,6 +264,7 @@ func handleMapRequest(c net.Conn, st *State) {
 		X    int    `json:"x"`
 		Y    int    `json:"y"`
 		Type string `json:"type"`
+		IsReported bool   `json:"is_reported"`
 	}
 	problems := make([]problemView, 0, len(st.Problems))
 	for _, p := range st.Problems {
@@ -338,11 +340,7 @@ func handleEvent(c net.Conn, st *State, body string) {
 }
 
 func handleProblemUpsert(c net.Conn, st *State, body string) {
-	var req struct {
-		X    int    `json:"x"`
-		Y    int    `json:"y"`
-		Type string `json:"type"`
-	}
+	var req Problem
 	if err := json.Unmarshal([]byte(body), &req); err != nil {
 		writeText(c, 400, "invalid json")
 		return
@@ -364,7 +362,7 @@ func handleProblemUpsert(c net.Conn, st *State, body string) {
 		return
 	}
 	st.Mu.Lock()
-	st.Problems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: typ}
+	st.Problems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: typ , IsReported: false}
 	st.Mu.Unlock()
 	writeText(c, 200, "stored")
 }
@@ -384,6 +382,8 @@ func handleProblemAt(c net.Conn, st *State, body string) {
 	}
 	st.Mu.RLock()
 	pb, ok := st.Problems[coordKey(req.X, req.Y)]
+	pb.IsReported = true
+	st.Problems[coordKey(req.X, req.Y)] = pb
 	st.Mu.RUnlock()
 	resp := map[string]any{
 		"present": ok,
@@ -438,3 +438,4 @@ func registerServiceBot(c net.Conn, st *State, body string, robotType string) {
 	log.Printf("%s robot registered: id=%d at (%d,%d)", robotType, id, x, y)
 	writeJSON(c, 200, string(b))
 }
+
