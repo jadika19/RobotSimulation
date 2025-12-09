@@ -8,8 +8,6 @@ import (
 	"log"
 	"math/rand"
 	"net"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +30,6 @@ type State struct {
 	Robots        map[int]Robot
 	Width         int
 	Height        int
-	WorldProblems map[string]Problem // All user-placed problems (ground truth)
 	KnownProblems map[string]Problem // Only problems reported by detectors
 }
 
@@ -45,7 +42,6 @@ type Problem struct {
 var St = &State{
 	NextID:        1,
 	Robots:        make(map[int]Robot),
-	WorldProblems: make(map[string]Problem),
 	KnownProblems: make(map[string]Problem),
 	Width:         20,
 	Height:        20,
@@ -129,14 +125,6 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 		handleStatusRequest(c, st)
 	case method == "GET" && path == "/map":
 		handleMapRequest(c, st)
-	case method == "GET" && path == "/world-map":
-		handleWorldMapRequest(c, st)
-	case method == "GET" && path == "/live-map":
-		handleLiveMapRequest(c)
-	case method == "POST" && path == "/problem":
-		handleProblemUpsert(c, st, body)
-	case method == "POST" && path == "/problem-at":
-		handleProblemAt(c, st, body)
 	case method == "POST" && path == "/robot":
 		handleRobotRegistration(c, st, body)
 	case method == "POST" && path == "/event":
@@ -156,17 +144,17 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 // ---------- Private Funktionen ----------
 
 func writeText(c net.Conn, code int, body string) {
-	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
+	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
 }
 
 func writeJSON(c net.Conn, code int, body string) {
-	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
 }
 
 func writeHTML(c net.Conn, code int, body string) {
-	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
+	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
 }
 
@@ -283,49 +271,6 @@ func handleMapRequest(c net.Conn, st *State) {
 	writeJSON(c, 200, string(b)+"\n")
 }
 
-func handleWorldMapRequest(c net.Conn, st *State) {
-	st.Mu.RLock()
-	type robotView struct {
-		ID     int    `json:"ID"`
-		X      int    `json:"X"`
-		Y      int    `json:"Y"`
-		Type   string `json:"type"`
-		Status string `json:"status"`
-	}
-	robots := make([]robotView, 0, len(st.Robots))
-	for _, rb := range st.Robots {
-		robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y, Type: rb.Type, Status: rb.Status})
-	}
-	type problemView struct {
-		X    int    `json:"x"`
-		Y    int    `json:"y"`
-		Type string `json:"type"`
-	}
-	problems := make([]problemView, 0, len(st.WorldProblems))
-	for _, p := range st.WorldProblems {
-		problems = append(problems, problemView{X: p.X, Y: p.Y, Type: p.Type})
-	}
-	resp := map[string]any{
-		"width":    st.Width,
-		"height":   st.Height,
-		"robots":   robots,
-		"problems": problems,
-	}
-	st.Mu.RUnlock()
-	b, _ := json.MarshalIndent(resp, "", "  ")
-	writeJSON(c, 200, string(b)+"\n")
-}
-
-func handleLiveMapRequest(c net.Conn) {
-	path := filepath.Join("internal", "coordinator", "live_map.html")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		writeText(c, 500, "could not load live_map.html")
-		return
-	}
-	writeHTML(c, 200, string(b))
-}
-
 func handleRobotRegistration(c net.Conn, st *State, body string) {
 	var req struct{ X, Y *int }
 	if strings.TrimSpace(body) != "" {
@@ -376,61 +321,6 @@ func handleEvent(c net.Conn, st *State, body string) {
 	st.KnownProblems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: req.Event}
 	st.Mu.Unlock()
 	writeText(c, 200, "Event received")
-}
-
-func handleProblemUpsert(c net.Conn, st *State, body string) {
-	var req Problem
-	if err := json.Unmarshal([]byte(body), &req); err != nil {
-		writeText(c, 400, "invalid json")
-		return
-	}
-	if req.X < 0 || req.X >= st.Width || req.Y < 0 || req.Y >= st.Height {
-		writeText(c, 400, "out of bounds")
-		return
-	}
-	typ := strings.ToLower(strings.TrimSpace(req.Type))
-	if typ == "clear" || typ == "" {
-		st.Mu.Lock()
-		delete(st.WorldProblems, coordKey(req.X, req.Y))
-		st.Mu.Unlock()
-		writeText(c, 200, "cleared")
-		return
-	}
-	if typ != "dirt" && typ != "defect" {
-		writeText(c, 400, "invalid type")
-		return
-	}
-	st.Mu.Lock()
-	st.WorldProblems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: typ}
-	st.Mu.Unlock()
-	writeText(c, 200, "stored")
-}
-
-func handleProblemAt(c net.Conn, st *State, body string) {
-	var req struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-	}
-	if err := json.Unmarshal([]byte(body), &req); err != nil {
-		writeText(c, 400, "invalid json")
-		return
-	}
-	if req.X < 0 || req.X >= st.Width || req.Y < 0 || req.Y >= st.Height {
-		writeText(c, 400, "out of bounds")
-		return
-	}
-	st.Mu.RLock()
-	pb, ok := st.WorldProblems[coordKey(req.X, req.Y)]
-	st.Mu.RUnlock()
-	resp := map[string]any{
-		"present": ok,
-		"type":    "",
-	}
-	if ok {
-		resp["type"] = pb.Type
-	}
-	b, _ := json.Marshal(resp)
-	writeJSON(c, 200, string(b))
 }
 
 func handleRepairRobotRegistration(c net.Conn, st *State, body string) {

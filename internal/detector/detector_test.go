@@ -83,7 +83,7 @@ func TestWalk(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	detector.Walk(context.Background(), r, conn, srv.URL)
+	detector.Walk(context.Background(), r, conn, srv.URL, srv.URL)
 
 	wg.Wait()
 }

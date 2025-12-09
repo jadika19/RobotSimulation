@@ -1,4 +1,11 @@
 services:
+  world:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/world/Dockerfile
+    ports:
+      - "8081:8081"
+
   coordinator:
     build:
       context: ../../
@@ -13,6 +20,11 @@ services:
       dockerfile: deployments/docker/detector/Dockerfile
     depends_on:
       - coordinator
+      - world
+    environment:
+      - COORDINATOR_ADDR=http://coordinator:8080
+      - WORLD_ADDR=http://world:8081
+      - UDP_ADDR=coordinator:9001
     deploy:
       replicas: 3
 

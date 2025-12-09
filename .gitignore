@@ -8,3 +8,9 @@
 .idea/
 vendor/
 *.env
+
+# Ignore baked binaries
+/coordinator
+/detector
+/servicebot
+/world
