@@ -61,7 +61,9 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 		handleProblemUpsert(c, st, body)
 	case method == "POST" && path == "/problem-at":
 		handleProblemAt(c, st, body)
-	case method == "GET" || method == "POST":
+	case method == "DELETE" && path == "/problem":
+		handleProblemDelete(c, st, body)
+	case method == "GET" || method == "POST" || method == "DELETE":
 		writeText(c, 404, "Not Found")
 	default:
 		writeText(c, 405, "Method Not Allowed")
@@ -217,4 +219,30 @@ func handleProblemAt(c net.Conn, st *State, body string) {
 	}
 	b, _ := json.Marshal(resp)
 	writeJSON(c, 200, string(b))
+}
+
+func handleProblemDelete(c net.Conn, st *State, body string) {
+	var req struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		writeText(c, 400, "invalid json")
+		return
+	}
+	if req.X < 0 || req.X >= st.Width || req.Y < 0 || req.Y >= st.Height {
+		writeText(c, 400, "out of bounds")
+		return
+	}
+	st.Mu.Lock()
+	key := coordKey(req.X, req.Y)
+	if _, ok := st.Problems[key]; ok {
+		delete(st.Problems, key)
+		st.Mu.Unlock()
+		log.Printf("problem deleted at (%d,%d)", req.X, req.Y)
+		writeText(c, 200, "deleted")
+		return
+	}
+	st.Mu.Unlock()
+	writeText(c, 404, "not found")
 }

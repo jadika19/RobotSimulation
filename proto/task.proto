@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package task;
+
+option go_package = "github.com/amir/Di1y_2/internal/taskpb";
+
+// TaskService is implemented by service bots (cleaner/repair).
+// The coordinator calls AssignTask to dispatch work to a bot.
+service TaskService {
+  // AssignTask tells a service bot to go to a location and fix a problem.
+  rpc AssignTask(TaskRequest) returns (TaskResponse);
+}
+
+message TaskRequest {
+  string task_id = 1;       // Unique task identifier
+  int32 x = 2;              // Problem X coordinate
+  int32 y = 3;              // Problem Y coordinate
+  string problem_type = 4;  // "dirt" or "defect"
+}
+
+message TaskResponse {
+  bool accepted = 1;        // Whether the bot accepted the task
+  string message = 2;       // Optional status message
+}
+
+// TaskCallbackService is implemented by the coordinator.
+// Service bots call ReportCompletion when they finish a task.
+service TaskCallbackService {
+  rpc ReportCompletion(CompletionRequest) returns (CompletionResponse);
+}
+
+message CompletionRequest {
+  string task_id = 1;       // The completed task ID
+  int32 robot_id = 2;       // Robot that completed it
+  bool success = 3;         // Whether the task was successful
+}
+
+message CompletionResponse {
+  bool acknowledged = 1;
+}

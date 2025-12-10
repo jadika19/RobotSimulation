@@ -1,10 +1,6 @@
-# Roboter-Simulation (Coordinator + Detector)
+# Roboter-Simulation (World + Coordinator + Detector + Service Bots)
 
-Dieses Projekt simuliert Roboter, die sich auf einem 2D-Gitter bewegen.  
-Es besteht aus zwei Komponenten:
-
-1. **Coordinator** – verwaltet den Serverzustand, HTTP-API, UDP-Listener
-2. **Detector** – simuliert Roboter, die sich zufällig bewegen und ihre Positionen an den Coordinator senden
+Dieses Projekt simuliert ein 2D-Gitter mit getrenntem Weltzustand (Ground Truth), Koordinator, Detektoren und Service-Bots (Cleaner/Repair). Detektoren entdecken Probleme, melden sie dem Koordinator, der den nächstgelegenen Service-Bot per gRPC zum Aufräumen/ Reparieren schickt. Eine Live-Map (Dual View) zeigt sowohl die Welt (alle Probleme) als auch die Koordinator-Sicht (nur entdeckte Probleme).
 
 ---
 
@@ -13,25 +9,26 @@ Es besteht aus zwei Komponenten:
 ```bash
 projekt/
 	cmd/
-		coordinator/
-			main.go
-		detector/
-			main.go
+		coordinator/       # HTTP + UDP + gRPC callback server
+		detector/          # Detektor-Bots
+		servicebot/        # Cleaner/Repair Bots (gRPC Server)
+		world/             # Welt-Service (Ground Truth)
 	deployments/
 		compose/
 			docker-compose.yml
 		docker/
 			coordinator/
-				Dockerfile
 			detector/
-				Dockerfile
+			servicebot/
+			world/
 	internal/
-		coordinator/
-			coordinator.go
-			coordinator_test.go
-		detector/
-			detector.go
-			detector_test.go
+		coordinator/       # Koordinator-Logik
+		detector/          # Detektor-Logik
+		serviceBots/       # Service-Bot-Logik (gRPC)
+		world/             # Weltzustand + Live-Map
+		taskpb/            # gRPC Stubs (TaskService, TaskCallback)
+	proto/
+		task.proto         # gRPC Definitionen
 	go.mod
 	Makefile
 	README.md
@@ -39,7 +36,7 @@ projekt/
 
 ## Voraussetzungen
 
-- [Go 1.23+](https://go.dev/dl/)
+- [Go 1.24+](https://go.dev/dl/)
 - [Docker](https://www.docker.com/)
 - [Docker Compose](https://docs.docker.com/compose/)
 
@@ -51,46 +48,44 @@ projekt/
 
 ```bash
 cd deployments/compose
-docker-compose build
+docker compose build
 ```
 
 2. **Starten aller Services:**
 
 ```bash
-docker-compose up
+docker compose up
 ```
 
-- Coordinator läuft auf TCP 8080 (HTTP)
-- Coordinator lauscht auf UDP 9001 für Positionsupdates
-- Detector verbindet sich automatisch über interne Docker-Namen
+- World Service: HTTP 8081 (`/world-map`, `/problem`, `/problem-at`, `/problem/delete`, `/live-map`)
+- Coordinator: HTTP 8080 (`/map`, `/event`, `/robot`, `/cleaner-robot`, `/repair-robot`), UDP 9001 (Positionsupdates), gRPC 9002 (TaskCallback)
+- Service-Bots: gRPC Server (per-Container Port `GRPC_PORT`, default 50051) für TaskService
+- Detectors verbinden sich automatisch über interne Docker-Namen und melden Funde an den Koordinator
 
-3. **Zusätzliche Roboter starten:**
+3. **Live-Map öffnen:**
 
-Um einen zusätzlichen Roboter zu starten, während die Services bereits laufen:
+- `http://localhost:8081/live-map` (wenn lokal) oder `http://<host-ip>:8081/live-map`
+- Linke Ansicht: Welt (alle Probleme), rechte Ansicht: Koordinator (nur entdeckte Probleme + Bots)
+
+4. **Zusätzliche Detektoren starten:**
 
 ```bash
 docker run --rm --network compose_default compose-detector
 ```
 
-Dies startet einen neuen Detector-Container, der sich automatisch registriert und beginnt, sich zu bewegen.
-
-oder
+oder skalieren:
 
 ```bash
-docker compose up -d --scale detektor=4
+docker compose up -d --scale detector=4
 ```
 
-Dies erhöht die Anzahl der Detector-Container dynamisch und bietet daher eine saubere Erweiterung der Compose.
-
-4. **Stoppen aller Services:**
+5. **Stoppen aller Services:**
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
-## Lokale Entwicklung
-
-Für lokale Tests ohne Docker:
+## Lokale Entwicklung (ohne Docker)
 
 1. **Build der Binaries:**
 
@@ -98,35 +93,64 @@ Für lokale Tests ohne Docker:
 make build
 ```
 
-2. **Coordinator starten (in einem Terminal):**
+2. **World Service starten:**
 
 ```bash
-make coordinator
+go run ./cmd/world
 ```
 
-- Coordinator läuft auf `localhost:8080` (HTTP) und lauscht auf UDP `9001`.
-
-3. **Detector starten (in einem anderen Terminal):**
+3. **Coordinator starten:**
 
 ```bash
-make detector
+go run ./cmd/coordinator
 ```
 
-- Detector registriert sich beim Coordinator und sendet Positionsupdates.
+4. **Detector starten:**
 
-4. **Tests ausführen:**
+```bash
+go run ./cmd/detector
+```
+
+5. **Service-Bot starten (Cleaner oder Repair):**
+
+```bash
+BOT_TYPE=cleaner go run ./cmd/servicebot
+```
+
+6. **Tests ausführen:**
 
 ```bash
 make test
 ```
 
-## HTTP-Endpunkte des Coordinators
+## HTTP/UDP/gRPC Endpunkte
 
-| Methode | Pfad    | Beschreibung                      |
-| ------- | ------- | --------------------------------- |
-| GET     | /status | Anzahl der registrierten Roboter  |
-| GET     | /map    | Aktuelle Positionen aller Roboter |
-| POST    | /robot  | Roboter registrieren              |
+### World Service (HTTP 8081)
+
+- `GET /world-map` – liefert Ground-Truth-Probleme (alle Probleme)
+- `POST /problem` – Problem hinzufügen (`{x,y,type}`)
+- `POST /problem-at` – Detektoren fragen nach Problem an Position
+- `DELETE /problem` – Problem entfernen (`{x,y}`) nach erfolgreicher Bereinigung
+- `GET /live-map` – Dual-View HTML (World vs Coordinator)
+
+### Coordinator (HTTP 8080, UDP 9001, gRPC 9002)
+
+- `GET /map` – Roboter + entdeckte Probleme
+- `GET /status` – Statusübersicht
+- `POST /event` – Detektor meldet gefundenes Problem (`{event,x,y}`)
+- `POST /robot` – Detektor registrieren
+- `POST /cleaner-robot` – Service-Bot (Cleaner) registrieren (`{grpcAddr}` optional x/y)
+- `POST /repair-robot` – Service-Bot (Repair) registrieren (`{grpcAddr}` optional x/y)
+- UDP :9001 – Positionsupdates im Format `id,x,y`
+- gRPC :9002 – TaskCallbackService (ReportCompletion)
+
+### Service-Bots (per Container gRPC, default Port 50051)
+
+- TaskService.AssignTask – Koordinator ruft auf, um Aufgabe zuzuweisen
+
+### Detector Bot
+
+- Läuft eigenständig, ruft `POST /event` beim Koordinator, fragt Welt mit `/problem-at` ab
 
 ## API testen mit curl
 

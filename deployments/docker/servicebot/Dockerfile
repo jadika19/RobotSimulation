@@ -1,5 +1,5 @@
 # Build Stage
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 WORKDIR /app
 COPY ../../../ .
 RUN go build -o servicebot ./cmd/servicebot
@@ -8,4 +8,5 @@ RUN go build -o servicebot ./cmd/servicebot
 FROM alpine:latest
 WORKDIR /app
 COPY --from=builder /app/servicebot .
+EXPOSE 50051
 CMD ["./servicebot"]
