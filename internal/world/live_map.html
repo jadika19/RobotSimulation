@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Live Robot Map</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        background: #111;
+        color: #eee;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        padding: 20px;
+      }
+      .container {
+        display: flex;
+        gap: 40px;
+        margin-top: 16px;
+      }
+      .map-section {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .map-section h2 {
+        margin-bottom: 8px;
+        font-size: 16px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(20, 24px);
+        grid-template-rows: repeat(20, 24px);
+        gap: 2px;
+      }
+      .cell {
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
+        background: #222;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        color: #eee;
+      }
+      .robot {
+        color: #fff;
+        font-weight: bold;
+      }
+
+      .robot-detector {
+        background: #2e86de;
+      }
+
+      .robot-cleaner {
+        background: #9b59b6;
+      }
+
+      .robot-repair {
+        background: #e67e22;
+      }
+
+      .dirt {
+        background: #0b5d2f;
+      }
+
+      .defect {
+        background: #b22222;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Live Robot Map (20x20)</h1>
+    <p>
+      Left click = dirt (green), right click = defect (red). Problems placed in
+      World View, discovered in Coordinator View.
+    </p>
+    <p style="font-size: 12px">
+      <span
+        style="
+          background: #2e86de;
+          padding: 2px 8px;
+          border-radius: 3px;
+          margin-right: 8px;
+        "
+        >Detector</span
+      >
+      <span
+        style="
+          background: #9b59b6;
+          padding: 2px 8px;
+          border-radius: 3px;
+          margin-right: 8px;
+        "
+        >Cleaner</span
+      >
+      <span
+        style="
+          background: #e67e22;
+          padding: 2px 8px;
+          border-radius: 3px;
+          margin-right: 8px;
+        "
+        >Repair</span
+      >
+      <span
+        style="
+          background: #0b5d2f;
+          padding: 2px 8px;
+          border-radius: 3px;
+          margin-right: 8px;
+        "
+        >Dirt</span
+      >
+      <span style="background: #b22222; padding: 2px 8px; border-radius: 3px"
+        >Defect</span
+      >
+    </p>
+    <div class="container">
+      <div class="map-section">
+        <h2>World View (All Problems)</h2>
+        <div id="world-grid" class="grid"></div>
+      </div>
+      <div class="map-section">
+        <h2>Coordinator View (Discovered Problems)</h2>
+        <div id="coord-grid" class="grid"></div>
+      </div>
+    </div>
+    <script>
+      const worldGridEl = document.getElementById("world-grid");
+      const coordGridEl = document.getElementById("coord-grid");
+
+      // URLs for the two services - use same host but different ports
+      const WORLD_URL = ""; // Same origin (world service serves this page)
+      const COORD_URL =
+        window.location.protocol + "//" + window.location.hostname + ":8080"; // Coordinator service
+
+      function buildEmptyGrid(gridEl, width, height) {
+        const cells = [];
+        gridEl.innerHTML = "";
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const div = document.createElement("div");
+            div.className = "cell";
+            div.textContent = "";
+            div.dataset.x = x;
+            div.dataset.y = y;
+            gridEl.appendChild(div);
+            cells.push(div);
+          }
+        }
+        return cells;
+      }
+
+      let worldCells = null;
+      let coordCells = null;
+
+      function renderGrid(cells, width, robots, problems) {
+        // clear all cells
+        for (const cell of cells) {
+          cell.className = "cell";
+          cell.textContent = "";
+        }
+
+        // place problems first
+        if (Array.isArray(problems)) {
+          problems.forEach((p) => {
+            const px = p.x ?? p.X;
+            const py = p.y ?? p.Y;
+            const pt = p.type ?? p.Type;
+            if (px < 0 || py < 0 || px >= width || py >= width) return;
+            const i = py * width + px;
+            const cell = cells[i];
+            if (!cell) return;
+            if (pt === "dirt") {
+              cell.classList.add("dirt");
+            } else if (pt === "defect") {
+              cell.classList.add("defect");
+            }
+          });
+        }
+
+        // place robots
+        if (Array.isArray(robots)) {
+          robots.forEach((r) => {
+            if (r.X < 0 || r.Y < 0 || r.X >= width || r.Y >= width) return;
+            const i = r.Y * width + r.X;
+            const cell = cells[i];
+            if (!cell) return;
+            cell.classList.add("robot");
+            const robotType = r.type || "detector";
+            cell.classList.add("robot-" + robotType);
+            if (cell.textContent === "") {
+              cell.textContent = String(r.ID);
+            } else {
+              cell.textContent = "+";
+            }
+          });
+        }
+      }
+
+      async function update() {
+        let robots = [];
+        let coordProblems = [];
+        let width = 20;
+        let height = 20;
+
+        // First fetch coordinator data (has robots and discovered problems)
+        try {
+          const coordRes = await fetch(COORD_URL + "/map");
+          if (coordRes.ok) {
+            const coordData = await coordRes.json();
+            robots = coordData.robots || [];
+            coordProblems = coordData.problems || [];
+            width = coordData.width || 20;
+            height = coordData.height || 20;
+
+            if (!coordCells || coordCells.length !== width * height) {
+              coordCells = buildEmptyGrid(coordGridEl, width, height);
+            }
+            renderGrid(coordCells, width, robots, coordProblems);
+          }
+        } catch (e) {
+          // ignore
+        }
+
+        // Then fetch world data (has all problems) and render with same robots
+        try {
+          const worldRes = await fetch(WORLD_URL + "/world-map");
+          if (worldRes.ok) {
+            const worldData = await worldRes.json();
+            const worldProblems = worldData.problems || [];
+            width = worldData.width || width;
+            height = worldData.height || height;
+
+            if (!worldCells || worldCells.length !== width * height) {
+              worldCells = buildEmptyGrid(worldGridEl, width, height);
+            }
+            // Use robots from coordinator for world view too
+            renderGrid(worldCells, width, robots, worldProblems);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      update();
+      setInterval(update, 500);
+
+      async function sendProblem(x, y, type) {
+        await fetch(WORLD_URL + "/problem", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ x, y, type }),
+        });
+        update();
+      }
+
+      worldGridEl.addEventListener("click", (ev) => {
+        const cell = ev.target.closest(".cell");
+        if (!cell || cell.dataset.x === undefined) return;
+        sendProblem(Number(cell.dataset.x), Number(cell.dataset.y), "dirt");
+      });
+
+      worldGridEl.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        const cell = ev.target.closest(".cell");
+        if (!cell || cell.dataset.x === undefined) return;
+        sendProblem(Number(cell.dataset.x), Number(cell.dataset.y), "defect");
+      });
+    </script>
+  </body>
+</html>

@@ -29,7 +29,7 @@ type RegResp struct {
 
 // ---------- Öffentliche Funktionen ----------
 
-func Run(coordHTTP, udpAddr string) error {
+func Run(coordHTTP, worldHTTP, udpAddr string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -54,7 +54,7 @@ func Run(coordHTTP, udpAddr string) error {
 	}
 	defer udpConn.Close()
 
-	Walk(ctx, regResp, udpConn, coordHTTP)
+	Walk(ctx, regResp, udpConn, coordHTTP, worldHTTP)
 	return nil
 }
 
@@ -91,7 +91,7 @@ func OpenUDPConnection(addr string) (*net.UDPConn, error) {
 	return conn.(*net.UDPConn), nil
 }
 
-func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn, tcpAddr string) {
+func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn, coordAddr, worldAddr string) {
 	x, y := r.Start.X, r.Start.Y
 	width, height := r.Width, r.Height
 	reported := make(map[string]bool)
@@ -107,13 +107,14 @@ func Walk(ctx context.Context, r *RegResp, conn *net.UDPConn, tcpAddr string) {
 		// Position über UDP senden
 		fmt.Fprintf(conn, "%d,%d,%d", r.ID, x, y)
 
-		// Prüfen, ob an dieser Stelle ein Problem liegt
-		if eventType, found := CheckForProblem(tcpAddr, x, y); found {
+		// Prüfen, ob an dieser Stelle ein Problem liegt (query world service)
+		if eventType, found := CheckForProblem(worldAddr, x, y); found {
 			key := fmt.Sprintf("%d,%d", x, y)
 			if !reported[key] {
 				reported[key] = true
+				// Report to coordinator
 				go func(px, py int, et string) {
-					if err := SendHTTPEvent(tcpAddr, et, px, py); err != nil {
+					if err := SendHTTPEvent(coordAddr, et, px, py); err != nil {
 						log.Printf("failed to send event %s at (%d,%d): %v", et, px, py, err)
 					}
 				}(x, y, eventType)

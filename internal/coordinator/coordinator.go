@@ -2,38 +2,56 @@ package coordinator
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math/rand"
 	"net"
-	"os"
-	"path/filepath"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/taskpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // ---------- Datenstrukturen ----------
 
 type Robot struct {
-	ID     int    `json:"id"`
-	X      int    `json:"x"`
-	Y      int    `json:"y"`
-	Type   string `json:"type"`   // "detector", "cleaner", "repair"
-	Status string `json:"status"` // "idle", "busy"
+	ID       int    `json:"id"`
+	X        int    `json:"x"`
+	Y        int    `json:"y"`
+	Type     string `json:"type"`     // "detector", "cleaner", "repair"
+	Status   string `json:"status"`   // "idle", "busy"
+	GRPCAddr string `json:"grpcAddr"` // gRPC address for task assignment
+	TaskID   string `json:"taskId"`   // Current task ID if busy
+}
+
+type Task struct {
+	ID        string `json:"id"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	Type      string `json:"type"`    // "dirt" or "defect"
+	RobotID   int    `json:"robotId"` // Assigned robot
+	Status    string `json:"status"`  // "pending", "assigned", "completed"
+	CreatedAt time.Time
 }
 
 type State struct {
 	Mu            sync.RWMutex
 	NextID        int
+	NextTaskID    int
 	Robots        map[int]Robot
 	Width         int
 	Height        int
-	WorldProblems map[string]Problem // All user-placed problems (ground truth)
 	KnownProblems map[string]Problem // Only problems reported by detectors
+	Tasks         map[string]*Task   // Active tasks
+	WorldAddr     string             // World service address for cleanup
 }
 
 type Problem struct {
@@ -44,11 +62,13 @@ type Problem struct {
 
 var St = &State{
 	NextID:        1,
+	NextTaskID:    1,
 	Robots:        make(map[int]Robot),
-	WorldProblems: make(map[string]Problem),
 	KnownProblems: make(map[string]Problem),
+	Tasks:         make(map[string]*Task),
 	Width:         20,
 	Height:        20,
+	WorldAddr:     "http://world:8081",
 }
 
 func init() {
@@ -129,14 +149,6 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 		handleStatusRequest(c, st)
 	case method == "GET" && path == "/map":
 		handleMapRequest(c, st)
-	case method == "GET" && path == "/world-map":
-		handleWorldMapRequest(c, st)
-	case method == "GET" && path == "/live-map":
-		handleLiveMapRequest(c)
-	case method == "POST" && path == "/problem":
-		handleProblemUpsert(c, st, body)
-	case method == "POST" && path == "/problem-at":
-		handleProblemAt(c, st, body)
 	case method == "POST" && path == "/robot":
 		handleRobotRegistration(c, st, body)
 	case method == "POST" && path == "/event":
@@ -156,17 +168,17 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 // ---------- Private Funktionen ----------
 
 func writeText(c net.Conn, code int, body string) {
-	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s",
+	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
 }
 
 func writeJSON(c net.Conn, code int, body string) {
-	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
 }
 
 func writeHTML(c net.Conn, code int, body string) {
-	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\n\r\n%s",
+	fmt.Fprintf(c, "HTTP/1.1 %d \r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: %d\r\n\r\n%s",
 		code, len(body), body)
 }
 
@@ -258,10 +270,11 @@ func handleMapRequest(c net.Conn, st *State) {
 		Y      int    `json:"Y"`
 		Type   string `json:"type"`
 		Status string `json:"status"`
+		TaskID string `json:"taskId,omitempty"`
 	}
 	robots := make([]robotView, 0, len(st.Robots))
 	for _, rb := range st.Robots {
-		robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y, Type: rb.Type, Status: rb.Status})
+		robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y, Type: rb.Type, Status: rb.Status, TaskID: rb.TaskID})
 	}
 	type problemView struct {
 		X    int    `json:"x"`
@@ -272,58 +285,28 @@ func handleMapRequest(c net.Conn, st *State) {
 	for _, p := range st.KnownProblems {
 		problems = append(problems, problemView{X: p.X, Y: p.Y, Type: p.Type})
 	}
-	resp := map[string]any{
-		"width":    st.Width,
-		"height":   st.Height,
-		"robots":   robots,
-		"problems": problems,
+	type taskView struct {
+		ID      string `json:"id"`
+		X       int    `json:"x"`
+		Y       int    `json:"y"`
+		Type    string `json:"type"`
+		RobotID int    `json:"robotId"`
+		Status  string `json:"status"`
 	}
-	st.Mu.RUnlock()
-	b, _ := json.MarshalIndent(resp, "", "  ")
-	writeJSON(c, 200, string(b)+"\n")
-}
-
-func handleWorldMapRequest(c net.Conn, st *State) {
-	st.Mu.RLock()
-	type robotView struct {
-		ID     int    `json:"ID"`
-		X      int    `json:"X"`
-		Y      int    `json:"Y"`
-		Type   string `json:"type"`
-		Status string `json:"status"`
-	}
-	robots := make([]robotView, 0, len(st.Robots))
-	for _, rb := range st.Robots {
-		robots = append(robots, robotView{ID: rb.ID, X: rb.X, Y: rb.Y, Type: rb.Type, Status: rb.Status})
-	}
-	type problemView struct {
-		X    int    `json:"x"`
-		Y    int    `json:"y"`
-		Type string `json:"type"`
-	}
-	problems := make([]problemView, 0, len(st.WorldProblems))
-	for _, p := range st.WorldProblems {
-		problems = append(problems, problemView{X: p.X, Y: p.Y, Type: p.Type})
+	tasks := make([]taskView, 0, len(st.Tasks))
+	for _, t := range st.Tasks {
+		tasks = append(tasks, taskView{ID: t.ID, X: t.X, Y: t.Y, Type: t.Type, RobotID: t.RobotID, Status: t.Status})
 	}
 	resp := map[string]any{
 		"width":    st.Width,
 		"height":   st.Height,
 		"robots":   robots,
 		"problems": problems,
+		"tasks":    tasks,
 	}
 	st.Mu.RUnlock()
 	b, _ := json.MarshalIndent(resp, "", "  ")
 	writeJSON(c, 200, string(b)+"\n")
-}
-
-func handleLiveMapRequest(c net.Conn) {
-	path := filepath.Join("internal", "coordinator", "live_map.html")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		writeText(c, 500, "could not load live_map.html")
-		return
-	}
-	writeHTML(c, 200, string(b))
 }
 
 func handleRobotRegistration(c net.Conn, st *State, body string) {
@@ -371,66 +354,23 @@ func handleEvent(c net.Conn, st *State, body string) {
 		return
 	}
 	log.Printf("problem reported: %s at (%d,%d)", req.Event, req.X, req.Y)
-	// Add to KnownProblems (coordinator now knows about this problem)
-	st.Mu.Lock()
-	st.KnownProblems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: req.Event}
-	st.Mu.Unlock()
-	writeText(c, 200, "Event received")
-}
 
-func handleProblemUpsert(c net.Conn, st *State, body string) {
-	var req Problem
-	if err := json.Unmarshal([]byte(body), &req); err != nil {
-		writeText(c, 400, "invalid json")
-		return
-	}
-	if req.X < 0 || req.X >= st.Width || req.Y < 0 || req.Y >= st.Height {
-		writeText(c, 400, "out of bounds")
-		return
-	}
-	typ := strings.ToLower(strings.TrimSpace(req.Type))
-	if typ == "clear" || typ == "" {
-		st.Mu.Lock()
-		delete(st.WorldProblems, coordKey(req.X, req.Y))
+	// Check if problem already known (avoid duplicates)
+	key := coordKey(req.X, req.Y)
+	st.Mu.Lock()
+	if _, exists := st.KnownProblems[key]; exists {
 		st.Mu.Unlock()
-		writeText(c, 200, "cleared")
+		writeText(c, 200, "Problem already known")
 		return
 	}
-	if typ != "dirt" && typ != "defect" {
-		writeText(c, 400, "invalid type")
-		return
-	}
-	st.Mu.Lock()
-	st.WorldProblems[coordKey(req.X, req.Y)] = Problem{X: req.X, Y: req.Y, Type: typ}
+	// Add to KnownProblems
+	st.KnownProblems[key] = Problem{X: req.X, Y: req.Y, Type: req.Event}
 	st.Mu.Unlock()
-	writeText(c, 200, "stored")
-}
 
-func handleProblemAt(c net.Conn, st *State, body string) {
-	var req struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-	}
-	if err := json.Unmarshal([]byte(body), &req); err != nil {
-		writeText(c, 400, "invalid json")
-		return
-	}
-	if req.X < 0 || req.X >= st.Width || req.Y < 0 || req.Y >= st.Height {
-		writeText(c, 400, "out of bounds")
-		return
-	}
-	st.Mu.RLock()
-	pb, ok := st.WorldProblems[coordKey(req.X, req.Y)]
-	st.Mu.RUnlock()
-	resp := map[string]any{
-		"present": ok,
-		"type":    "",
-	}
-	if ok {
-		resp["type"] = pb.Type
-	}
-	b, _ := json.Marshal(resp)
-	writeJSON(c, 200, string(b))
+	// Trigger task assignment in background
+	go assignTask(st, req.X, req.Y, req.Event)
+
+	writeText(c, 200, "Event received")
 }
 
 func handleRepairRobotRegistration(c net.Conn, st *State, body string) {
@@ -442,7 +382,11 @@ func handleCleanerRobotRegistration(c net.Conn, st *State, body string) {
 }
 
 func registerServiceBot(c net.Conn, st *State, body string, robotType string) {
-	var req struct{ X, Y *int }
+	var req struct {
+		X        *int   `json:"x"`
+		Y        *int   `json:"y"`
+		GRPCAddr string `json:"grpcAddr"`
+	}
 	if strings.TrimSpace(body) != "" {
 		_ = json.Unmarshal([]byte(body), &req)
 	}
@@ -462,7 +406,7 @@ func registerServiceBot(c net.Conn, st *State, body string, robotType string) {
 	} else {
 		y = rng.Intn(st.Height)
 	}
-	st.Robots[id] = Robot{ID: id, X: x, Y: y, Type: robotType, Status: "idle"}
+	st.Robots[id] = Robot{ID: id, X: x, Y: y, Type: robotType, Status: "idle", GRPCAddr: req.GRPCAddr}
 	resp := map[string]any{
 		"id":     id,
 		"type":   robotType,
@@ -472,6 +416,184 @@ func registerServiceBot(c net.Conn, st *State, body string, robotType string) {
 	}
 	b, _ := json.Marshal(resp)
 	st.Mu.Unlock()
-	log.Printf("%s robot registered: id=%d at (%d,%d)", robotType, id, x, y)
+	log.Printf("%s robot registered: id=%d at (%d,%d) grpc=%s", robotType, id, x, y, req.GRPCAddr)
 	writeJSON(c, 200, string(b))
+}
+
+// ---------- Task Assignment ----------
+
+func assignTask(st *State, x, y int, problemType string) {
+	// Determine which robot type can handle this problem
+	var requiredType string
+	if problemType == "dirt" {
+		requiredType = "cleaner"
+	} else if problemType == "defect" {
+		requiredType = "repair"
+	} else {
+		log.Printf("unknown problem type: %s", problemType)
+		return
+	}
+
+	st.Mu.Lock()
+	// Find nearest idle robot of the required type
+	var bestRobot *Robot
+	bestDistance := -1
+	for id, robot := range st.Robots {
+		if robot.Type != requiredType || robot.Status != "idle" || robot.GRPCAddr == "" {
+			continue
+		}
+		distance := abs(robot.X-x) + abs(robot.Y-y) // Manhattan distance
+		if bestDistance < 0 || distance < bestDistance {
+			r := st.Robots[id]
+			bestRobot = &r
+			bestDistance = distance
+		}
+	}
+
+	if bestRobot == nil {
+		st.Mu.Unlock()
+		log.Printf("no idle %s robot available for problem at (%d,%d)", requiredType, x, y)
+		return
+	}
+
+	// Create task
+	taskID := fmt.Sprintf("task-%d", st.NextTaskID)
+	st.NextTaskID++
+	task := &Task{
+		ID:        taskID,
+		X:         x,
+		Y:         y,
+		Type:      problemType,
+		RobotID:   bestRobot.ID,
+		Status:    "assigned",
+		CreatedAt: time.Now(),
+	}
+	st.Tasks[taskID] = task
+
+	// Mark robot as busy
+	robot := st.Robots[bestRobot.ID]
+	robot.Status = "busy"
+	robot.TaskID = taskID
+	st.Robots[bestRobot.ID] = robot
+	grpcAddr := robot.GRPCAddr
+	robotID := robot.ID
+	st.Mu.Unlock()
+
+	log.Printf("gRPC AssignTask -> robot=%d addr=%s task=%s problem=%s target=(%d,%d)", robotID, grpcAddr, taskID, problemType, x, y)
+
+	// Call robot via gRPC
+	go callRobotGRPC(grpcAddr, robotID, taskID, x, y, problemType)
+}
+
+func callRobotGRPC(addr string, robotID int, taskID string, x, y int, problemType string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	log.Printf("gRPC dial -> TaskService addr=%s robot=%d task=%s", addr, robotID, taskID)
+
+	conn, err := grpc.DialContext(ctx, addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Printf("gRPC dial failed addr=%s robot=%d task=%s err=%v", addr, robotID, taskID, err)
+		return
+	}
+	defer conn.Close()
+
+	client := taskpb.NewTaskServiceClient(conn)
+	resp, err := client.AssignTask(ctx, &taskpb.TaskRequest{
+		TaskId:      taskID,
+		X:           int32(x),
+		Y:           int32(y),
+		ProblemType: problemType,
+	})
+	if err != nil {
+		log.Printf("gRPC AssignTask failed addr=%s robot=%d task=%s err=%v", addr, robotID, taskID, err)
+		return
+	}
+	log.Printf("gRPC AssignTask ok addr=%s robot=%d task=%s accepted=%v", addr, robotID, taskID, resp.Accepted)
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// ---------- gRPC Callback Server ----------
+
+type TaskCallbackServer struct {
+	taskpb.UnimplementedTaskCallbackServiceServer
+	St *State
+}
+
+func (s *TaskCallbackServer) ReportCompletion(ctx context.Context, req *taskpb.CompletionRequest) (*taskpb.CompletionResponse, error) {
+	log.Printf("gRPC TaskCallback.ReportCompletion robot=%d task=%s success=%v", req.RobotId, req.TaskId, req.Success)
+
+	s.St.Mu.Lock()
+	task, ok := s.St.Tasks[req.TaskId]
+	if !ok {
+		s.St.Mu.Unlock()
+		return &taskpb.CompletionResponse{Acknowledged: false}, nil
+	}
+
+	// Remove problem from KnownProblems
+	key := coordKey(task.X, task.Y)
+	delete(s.St.KnownProblems, key)
+
+	// Mark task completed
+	task.Status = "completed"
+
+	// Mark robot as idle
+	if robot, ok := s.St.Robots[int(req.RobotId)]; ok {
+		robot.Status = "idle"
+		robot.TaskID = ""
+		s.St.Robots[int(req.RobotId)] = robot
+	}
+
+	// Clean up completed task
+	delete(s.St.Tasks, req.TaskId)
+	worldAddr := s.St.WorldAddr
+	s.St.Mu.Unlock()
+
+	// Delete problem from World service
+	go deleteProblemFromWorld(worldAddr, task.X, task.Y)
+
+	return &taskpb.CompletionResponse{Acknowledged: true}, nil
+}
+
+func deleteProblemFromWorld(worldAddr string, x, y int) {
+	body := fmt.Sprintf(`{"x":%d,"y":%d}`, x, y)
+	req, err := http.NewRequest("DELETE", worldAddr+"/problem", strings.NewReader(body))
+	if err != nil {
+		log.Printf("failed to create delete request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("failed to delete problem from world: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	log.Printf("deleted problem at (%d,%d) from world, status=%d", x, y, resp.StatusCode)
+}
+
+func StartGRPCCallbackServer(addr string, st *State) {
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("failed to listen on %s: %v", addr, err)
+	}
+	logger := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		start := time.Now()
+		resp, err := handler(ctx, req)
+		dur := time.Since(start)
+		log.Printf("gRPC srv=TaskCallback addr=%s method=%s dur=%s req=%+v resp=%+v err=%v", addr, info.FullMethod, dur, req, resp, err)
+		return resp, err
+	}
+	s := grpc.NewServer(grpc.UnaryInterceptor(logger))
+	taskpb.RegisterTaskCallbackServiceServer(s, &TaskCallbackServer{St: st})
+	log.Printf("gRPC callback server listening on %s", addr)
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("failed to serve gRPC: %v", err)
+	}
 }

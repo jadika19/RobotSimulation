@@ -1,4 +1,11 @@
 services:
+  world:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/world/Dockerfile
+    ports:
+      - "8081:8081"
+
   coordinator:
     build:
       context: ../../
@@ -6,6 +13,9 @@ services:
     ports:
       - "8080:8080"
       - "9001:9001/udp"
+      - "9002:9002"
+    environment:
+      - WORLD_ADDR=http://world:8081
 
   detector:
     build:
@@ -13,6 +23,11 @@ services:
       dockerfile: deployments/docker/detector/Dockerfile
     depends_on:
       - coordinator
+      - world
+    environment:
+      - COORDINATOR_ADDR=http://coordinator:8080
+      - WORLD_ADDR=http://world:8081
+      - UDP_ADDR=coordinator:9001
     deploy:
       replicas: 3
 
@@ -24,6 +39,10 @@ services:
       - coordinator
     environment:
       - BOT_TYPE=cleaner
+      - COORD_ADDR=http://coordinator:8080
+      - COORD_UDP=coordinator:9001
+      - COORD_GRPC=coordinator:9002
+      - GRPC_PORT=50051
     deploy:
       replicas: 2
 
@@ -35,5 +54,9 @@ services:
       - coordinator
     environment:
       - BOT_TYPE=repair
+      - COORD_ADDR=http://coordinator:8080
+      - COORD_UDP=coordinator:9001
+      - COORD_GRPC=coordinator:9002
+      - GRPC_PORT=50051
     deploy:
       replicas: 2

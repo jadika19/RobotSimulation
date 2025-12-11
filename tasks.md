@@ -15,18 +15,17 @@
 
 ## Detector Bot
 
-- [ ] Soll zufällig Probleme auf der Karte entdecken
+- [x] Soll zufällig Probleme auf der Karte entdecken
 - [ ] Probleme an Koordinator über neue REST-Schnittstelle melden (z. B. `POST /event`)
 
 ## Koordinator
 
 - [ ] Nach Erhalt von Problem geeigneten und verfügbaren Service-Bot auswählen
 - [ ] Aufgaben an Service-Bots vergeben über RPC (gRPC/Apache Thrift)
-  - [ ] Mögliche Bestandteile: Aufgaben-ID, Ort des Problems, Art des Problems
+- [ ] Mögliche Bestandteile: Aufgaben-ID, Ort des Problems, Art des Problems
 
 ## Dashboard
 
-- [ ] `GET /map` erweitern
-  - [ ] Neue Probleme anzeigen
-  - [ ] Welcher Bot erledigt welche Aufgabe
-  - [ ] Welche Aufgabe wurde erledigt
+- [x] Neue Probleme anzeigen
+- [ ] Welcher Bot erledigt welche Aufgabe
+- [ ] Welche Aufgabe wurde erledigt
