@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -451,8 +452,21 @@ func AssignTask(st *State, x, y int, problemType string) {
 	}
 
 	if bestRobot == nil {
+		// No idle robot available, create pending task
+		taskID := fmt.Sprintf("task-%d", st.NextTaskID)
+		st.NextTaskID++
+		task := &Task{
+			ID:        taskID,
+			X:         x,
+			Y:         y,
+			Type:      problemType,
+			RobotID:   -1, // No robot assigned yet
+			Status:    "pending",
+			CreatedAt: time.Now(),
+		}
+		st.Tasks[taskID] = task
 		st.Mu.Unlock()
-		log.Printf("no idle %s robot available for problem at (%d,%d)", requiredType, x, y)
+		log.Printf("no idle %s robot available for problem at (%d,%d), created pending task %s", requiredType, x, y, taskID)
 		return
 	}
 
@@ -555,10 +569,73 @@ func (s *TaskCallbackServer) ReportCompletion(ctx context.Context, req *taskpb.C
 	worldAddr := s.St.WorldAddr
 	s.St.Mu.Unlock()
 
+	// Try to assign any pending tasks now that a robot is idle
+	go tryAssignPendingTasks(s.St)
+
 	// Delete problem from World service
 	go deleteProblemFromWorld(worldAddr, task.X, task.Y)
 
 	return &taskpb.CompletionResponse{Acknowledged: true}, nil
+}
+
+// tryAssignPendingTasks attempts to assign any pending tasks to newly available robots
+func tryAssignPendingTasks(st *State) {
+	st.Mu.Lock()
+	defer st.Mu.Unlock()
+
+	for taskID, task := range st.Tasks {
+		if task.Status != "pending" {
+			continue
+		}
+
+		// Determine which robot type can handle this problem
+		var requiredType string
+		if task.Type == "dirt" {
+			requiredType = "cleaner"
+		} else if task.Type == "defect" {
+			requiredType = "repair"
+		} else {
+			log.Printf("unknown pending task type: %s", task.Type)
+			continue
+		}
+
+		var bestRobot *Robot
+		var bestDist float64
+		for _, robot := range st.Robots {
+			if robot.Type != requiredType || robot.Status != "idle" {
+				continue
+			}
+			dist := math.Sqrt(float64((robot.X-task.X)*(robot.X-task.X) + (robot.Y-task.Y)*(robot.Y-task.Y)))
+			if bestRobot == nil || dist < bestDist {
+				bestRobot = &robot
+				bestDist = dist
+			}
+		}
+
+		if bestRobot == nil {
+			continue // Still no robot available for this task
+		}
+
+		// Assign the task
+		task.RobotID = bestRobot.ID
+		task.Status = "assigned"
+		st.Tasks[taskID] = task
+
+		// Mark robot as busy
+		robot := st.Robots[bestRobot.ID]
+		robot.Status = "busy"
+		robot.TaskID = taskID
+		st.Robots[bestRobot.ID] = robot
+		grpcAddr := robot.GRPCAddr
+		robotID := robot.ID
+
+		log.Printf("assigned pending task %s to robot %d at (%d,%d)", taskID, robotID, task.X, task.Y)
+
+		// Call robot via gRPC (unlock mutex during gRPC call)
+		st.Mu.Unlock()
+		go callRobotGRPC(grpcAddr, robotID, taskID, task.X, task.Y, task.Type)
+		st.Mu.Lock()
+	}
 }
 
 func deleteProblemFromWorld(worldAddr string, x, y int) {

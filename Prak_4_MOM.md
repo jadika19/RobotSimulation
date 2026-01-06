@@ -352,6 +352,9 @@ events/
 9. ✅ Exported `AssignTask()` function from coordinator package for MQTT handler access
 10. ✅ Preserved gRPC task assignment flow (unchanged)
 11. ✅ Mode switching works: Set `useMQTT=true` to revert to UDP, `useMQTT=false` for MQTT
+12. ✅ Implemented pending task queue system to handle task overflow scenarios
+13. ✅ Added `tryAssignPendingTasks()` function to retry pending tasks when robots become available
+14. ✅ Fixed task assignment logic to correctly map problem types (dirt→cleaner, defect→repair)
 
 **Details:** [See Step 3 Details](#step-3-details)
 
@@ -404,7 +407,106 @@ events/
 
 ---
 
-### Step 6: Testing and Validation
+### Step 6: Bug Fixes and Enhancements ✅
+
+**Status:** Completed  
+**Date:** January 6, 2026
+
+**Issues Fixed:**
+
+1. ✅ **MQTT Broker Port Configuration**
+
+   - **Problem:** Services configured with `tcp://mosquitto:1884` (host port) instead of `tcp://mosquitto:1883` (container port)
+   - **Solution:** Updated all MQTT_BROKER environment variables in docker-compose.yml to use port 1883
+   - **Impact:** All services now connect correctly to the broker inside Docker network
+
+2. ✅ **Pending Task Queue Implementation**
+
+   - **Problem:** When all robots are busy, new problems are discarded and never get fixed
+   - **Example:** 3+ problems detected, only 2 robots available → 3rd problem lost forever
+   - **Root Cause:** `AssignTask()` returned early when `bestRobot == nil`, discarding the task
+   - **Solution:**
+     - Modified `AssignTask()` to create tasks with `status="pending"` when no robot available
+     - Added `tryAssignPendingTasks()` function to scan for pending tasks and assign to newly available robots
+     - Modified `ReportCompletion()` to call `tryAssignPendingTasks()` when a robot becomes idle
+   - **Impact:** All reported problems now eventually get serviced, even during peak load
+
+3. ✅ **Pending Task Robot Type Mapping**
+   - **Problem:** `tryAssignPendingTasks()` incorrectly mapped problem types (checked for "fire" instead of "defect")
+   - **Symptom:** Defect problems could be assigned to cleaner robots instead of repair robots
+   - **Solution:** Fixed type mapping to match `AssignTask()` logic:
+     - `"dirt"` → `"cleaner"`
+     - `"defect"` → `"repair"`
+   - **Impact:** Pending tasks now correctly assigned to appropriate robot type
+
+**Code Changes:**
+
+```go
+// internal/coordinator/coordinator.go
+
+// Modified AssignTask to create pending tasks
+if bestRobot == nil {
+    taskID := fmt.Sprintf("task-%d", st.NextTaskID)
+    st.NextTaskID++
+    task := &Task{
+        ID:        taskID,
+        X:         x,
+        Y:         y,
+        Type:      problemType,
+        RobotID:   -1,  // No robot assigned yet
+        Status:    "pending",
+        CreatedAt: time.Now(),
+    }
+    st.Tasks[taskID] = task
+    log.Printf("no idle robot, created pending task %s", taskID)
+    return
+}
+
+// Added tryAssignPendingTasks function
+func tryAssignPendingTasks(st *State) {
+    st.Mu.Lock()
+    defer st.Mu.Unlock()
+
+    for taskID, task := range st.Tasks {
+        if task.Status != "pending" {
+            continue
+        }
+
+        // Correct type mapping
+        var requiredType string
+        if task.Type == "dirt" {
+            requiredType = "cleaner"
+        } else if task.Type == "defect" {
+            requiredType = "repair"
+        } else {
+            log.Printf("unknown pending task type: %s", task.Type)
+            continue
+        }
+
+        // Find idle robot and assign...
+    }
+}
+
+// Modified ReportCompletion to trigger retry
+func (s *TaskCallbackServer) ReportCompletion(...) {
+    // ... existing logic ...
+
+    go tryAssignPendingTasks(s.St)  // Try pending tasks when robot idle
+
+    return &taskpb.CompletionResponse{Acknowledged: true}, nil
+}
+```
+
+**Testing Status:**
+
+- ✅ All services compile successfully
+- ✅ MQTT broker port configuration verified
+- ✅ Pending task queue logic verified
+- ⏳ Manual testing pending with docker-compose
+
+---
+
+### Step 7: Testing and Validation
 
 **Status:** Pending Manual Testing  
 **Date:** January 6, 2026
@@ -1957,15 +2059,18 @@ mosquitto_sub -h localhost -t 'devices/servicebot/+/status' -v
 
 ## Change Log
 
-| Date       | Step     | Description                                                          |
-| ---------- | -------- | -------------------------------------------------------------------- |
-| 2026-01-06 | Init     | Created documentation structure                                      |
-| 2026-01-06 | Step 1   | ✅ Added Mosquitto broker to docker-compose.yml with env vars        |
-| 2026-01-06 | Step 2   | ✅ Added Paho MQTT library and created mqtt.Client abstraction layer |
-| 2026-01-06 | Step 3   | ✅ Migrated Coordinator to MQTT subscriber with mode switching       |
-| 2026-01-06 | Step 4   | ✅ Migrated Detector to MQTT publisher with mode switching           |
-| 2026-01-06 | Step 5   | ✅ Migrated ServiceBot to MQTT publisher with mode switching         |
-| 2026-01-06 | Complete | ✅ All services successfully compile and are ready for testing       |
+| Date       | Step     | Description                                                            |
+| ---------- | -------- | ---------------------------------------------------------------------- |
+| 2026-01-06 | Init     | Created documentation structure                                        |
+| 2026-01-06 | Step 1   | ✅ Added Mosquitto broker to docker-compose.yml with env vars          |
+| 2026-01-06 | Step 2   | ✅ Added Paho MQTT library and created mqtt.Client abstraction layer   |
+| 2026-01-06 | Step 3   | ✅ Migrated Coordinator to MQTT subscriber with mode switching         |
+| 2026-01-06 | Step 4   | ✅ Migrated Detector to MQTT publisher with mode switching             |
+| 2026-01-06 | Step 5   | ✅ Migrated ServiceBot to MQTT publisher with mode switching           |
+| 2026-01-06 | Step 6   | ✅ Fixed MQTT broker port configuration in docker-compose              |
+| 2026-01-06 | Step 6   | ✅ Implemented pending task queue for overflow scenarios               |
+| 2026-01-06 | Step 6   | ✅ Fixed pending task robot type mapping (dirt→cleaner, defect→repair) |
+| 2026-01-06 | Complete | ✅ All services successfully compile and are ready for testing         |
 
 ---
 

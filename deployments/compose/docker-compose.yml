@@ -22,7 +22,7 @@ services:
       - "9002:9002"
     environment:
       - WORLD_ADDR=http://world:8081
-      - MQTT_BROKER=tcp://mosquitto:1884
+      - MQTT_BROKER=tcp://mosquitto:1883
     depends_on:
       - mosquitto
 
@@ -38,7 +38,7 @@ services:
       - COORDINATOR_ADDR=http://coordinator:8080
       - WORLD_ADDR=http://world:8081
       - UDP_ADDR=coordinator:9001
-      - MQTT_BROKER=tcp://mosquitto:1884
+      - MQTT_BROKER=tcp://mosquitto:1883
     deploy:
       replicas: 3
 
@@ -55,7 +55,7 @@ services:
       - COORD_UDP=coordinator:9001
       - COORD_GRPC=coordinator:9002
       - GRPC_PORT=50051
-      - MQTT_BROKER=tcp://mosquitto:1884
+      - MQTT_BROKER=tcp://mosquitto:1883
     deploy:
       replicas: 2
 
@@ -72,6 +72,6 @@ services:
       - COORD_UDP=coordinator:9001
       - COORD_GRPC=coordinator:9002
       - GRPC_PORT=50051
-      - MQTT_BROKER=tcp://mosquitto:1884
+      - MQTT_BROKER=tcp://mosquitto:1883
     deploy:
       replicas: 2
