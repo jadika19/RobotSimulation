@@ -368,7 +368,7 @@ func handleEvent(c net.Conn, st *State, body string) {
 	st.Mu.Unlock()
 
 	// Trigger task assignment in background
-	go assignTask(st, req.X, req.Y, req.Event)
+	go AssignTask(st, req.X, req.Y, req.Event)
 
 	writeText(c, 200, "Event received")
 }
@@ -422,7 +422,7 @@ func registerServiceBot(c net.Conn, st *State, body string, robotType string) {
 
 // ---------- Task Assignment ----------
 
-func assignTask(st *State, x, y int, problemType string) {
+func AssignTask(st *State, x, y int, problemType string) {
 	// Determine which robot type can handle this problem
 	var requiredType string
 	if problemType == "dirt" {
