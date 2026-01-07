@@ -198,6 +198,108 @@ go test ./internal/detector -v
 go test ./internal/detector -bench=.
 ```
 
+3. **Viertes Praktikums Tests ausführen:**
+
+```bash
+go test -v -run "TestRobotFailure" ./internal/coordinator/
+```
+
+---
+
+## Nicht-Funktionale Tests (Non-Functional Tests)
+
+Die folgenden Tests prüfen **WIE** das System arbeitet, nicht was es tut. Sie validieren Performance und Zuverlässigkeit der MQTT/MOM-Implementierung.
+
+### Test 1: Message Latency (Performance)
+
+Misst die Round-Trip-Zeit für MQTT-Nachrichten vom Publisher zum Subscriber.
+
+**Ausführung:**
+
+```bash
+go test -v -run TestMessageLatency ./internal/coordinator/
+```
+
+**Was wird getestet:**
+
+- Zeit von Publish bis Receive (100 Nachrichten)
+- Statistische Analyse: Min, Max, Avg, P50, P95, P99
+- Delivery Rate (sollte 99%+ sein)
+
+**Pass-Kriterien:**
+
+- Average Latency < 50ms
+- P99 Latency < 200ms
+- Delivery Rate ≥ 99%
+
+### Test 2: Connection Failure Recovery (Reliability)
+
+Testet das Auto-Reconnect-Verhalten des MQTT-Clients bei Verbindungsabbruch.
+
+**Ausführung:**
+
+```bash
+go test -v -run TestConnectionFailureRecovery ./internal/coordinator/
+```
+
+**Was wird getestet:**
+
+- Client-Verhalten bei Broker-Ausfall
+- Automatische Wiederverbindung
+- Nachrichtenübertragung nach Recovery (QoS 1)
+- State Consistency nach Disruption
+
+**Pass-Kriterien:**
+
+- Reconnection Time < 15 Sekunden
+- Client reconnected = true
+- Nachrichten nach Recovery erfolgreich
+
+### Batch-Test Runner (100 Iterationen)
+
+Führt beide Tests mehrfach aus und aggregiert die Ergebnisse:
+
+```bash
+# 100 Iterationen (Standard)
+./scripts/run_nonfunctional_tests.sh
+
+# Oder mit anderer Anzahl
+./scripts/run_nonfunctional_tests.sh 50
+```
+
+**Voraussetzung:** MQTT Broker muss laufen (lokal auf Port 1883 oder via Docker).
+
+### Test-Ergebnisse (Beispiel)
+
+Die folgende Tabelle zeigt typische Ergebnisse nach 100 Testdurchläufen:
+
+#### Message Latency Test Results
+
+| Metric              | Value      | Unit | Threshold    | Status  |
+| ------------------- | ---------- | ---- | ------------ | ------- |
+| **Average Latency** | ~500-700   | μs   | < 50,000 μs  | ✅ PASS |
+| **P50 Latency**     | ~500-600   | μs   | -            | -       |
+| **P95 Latency**     | ~800-1000  | μs   | -            | -       |
+| **P99 Latency**     | ~1000-1500 | μs   | < 200,000 μs | ✅ PASS |
+| **Min Latency**     | ~100-200   | μs   | -            | -       |
+| **Max Latency**     | ~1000-2000 | μs   | -            | -       |
+| **Delivery Rate**   | 100        | %    | ≥ 99%        | ✅ PASS |
+
+#### Connection Recovery Test Results
+
+| Metric                   | Value    | Unit | Threshold   | Status  |
+| ------------------------ | -------- | ---- | ----------- | ------- |
+| **Avg Reconnect Time**   | ~100-200 | ms   | < 15,000 ms | ✅ PASS |
+| **Min Reconnect Time**   | ~50-100  | ms   | -           | -       |
+| **Max Reconnect Time**   | ~200-500 | ms   | -           | -       |
+| **Reconnection Success** | 100      | %    | 100%        | ✅ PASS |
+
+### Interpretation
+
+- **Message Latency:** MQTT liefert zuverlässige Nachrichtenübermittlung mit QoS 1. Latenzen im Sub-Millisekunden- bis niedrigen Millisekundenbereich demonstrieren effiziente Broker-Performance, geeignet für Echtzeit-Positionsupdates.
+
+- **Connection Recovery:** Die Auto-Reconnect-Funktion des Paho MQTT-Clients gewährleistet Systemresilienz. Bei Broker-Neustart verbinden sich Clients automatisch innerhalb des konfigurierten Timeouts wieder, was die Systemverfügbarkeit aufrechterhält.
+
 ---
 
 ## Troubleshooting

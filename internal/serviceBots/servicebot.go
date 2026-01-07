@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/mqtt"
 	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/taskpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -38,6 +39,7 @@ type ServiceBot struct {
 	Width          int
 	Height         int
 	udpConn        *net.UDPConn
+	mqttClient     *mqtt.Client
 	UDPAddr        string
 	CoordGRPCAddr  string // Coordinator gRPC callback address
 	Mu             sync.Mutex
@@ -100,8 +102,13 @@ func (bot *ServiceBot) ConnectUDP(udpAddr string) error {
 	return nil
 }
 
-// Close closes the UDP connection
+// Close closes the UDP or MQTT connection
 func (bot *ServiceBot) Close() {
+	if bot.mqttClient != nil {
+		// Publish offline status before disconnecting
+		bot.PublishStatus("offline")
+		bot.mqttClient.Disconnect(1000)
+	}
 	if bot.udpConn != nil {
 		bot.udpConn.Close()
 	}
@@ -136,6 +143,13 @@ func (bot *ServiceBot) AssignTask(ctx context.Context, req *taskpb.TaskRequest) 
 }
 
 func (bot *ServiceBot) executeTask(task *taskpb.TaskRequest) {
+	// Choose execution mode based on active connection
+	if bot.mqttClient != nil {
+		bot.executeTaskMQTT(task)
+		return
+	}
+
+	// Default UDP mode execution
 	targetX := int(task.X)
 	targetY := int(task.Y)
 
@@ -230,4 +244,100 @@ func OpenUDPConnection(addr string) (*net.UDPConn, error) {
 		return nil, err
 	}
 	return conn.(*net.UDPConn), nil
+}
+
+// ---------- MQTT Mode Functions ----------
+
+// ConnectMQTT establishes MQTT connection with Last Will Testament
+func (bot *ServiceBot) ConnectMQTT(brokerURL string) error {
+	config := mqtt.Config{
+		BrokerURL:   brokerURL,
+		ClientID:    fmt.Sprintf("servicebot-%d", bot.ID),
+		WillEnabled: true,
+		WillTopic:   fmt.Sprintf("devices/servicebot/%d/status", bot.ID),
+		WillPayload: "offline",
+		WillQoS:     1,
+		WillRetain:  true,
+	}
+
+	client, err := mqtt.NewClient(config)
+	if err != nil {
+		return fmt.Errorf("mqtt connect: %w", err)
+	}
+
+	bot.mqttClient = client
+	return nil
+}
+
+// PublishPosition publishes current position to MQTT broker
+func (bot *ServiceBot) PublishPosition() {
+	if bot.mqttClient == nil {
+		return
+	}
+
+	posMsg := mqtt.PositionMessage{
+		ID:        bot.ID,
+		X:         bot.X,
+		Y:         bot.Y,
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+
+	if err := bot.mqttClient.PublishPosition("servicebot", posMsg); err != nil {
+		log.Printf("Failed to publish position: %v", err)
+	}
+}
+
+// PublishStatus publishes online/offline status to MQTT broker
+func (bot *ServiceBot) PublishStatus(status string) {
+	if bot.mqttClient == nil {
+		return
+	}
+
+	if err := bot.mqttClient.PublishStatus("servicebot", bot.ID, status); err != nil {
+		log.Printf("Failed to publish status: %v", err)
+	}
+}
+
+// executeTaskMQTT performs task execution with MQTT position updates
+func (bot *ServiceBot) executeTaskMQTT(task *taskpb.TaskRequest) {
+	targetX := int(task.X)
+	targetY := int(task.Y)
+
+	log.Printf("moving from (%d,%d) to (%d,%d)", bot.X, bot.Y, targetX, targetY)
+
+	// Move to target position step by step
+	for bot.X != targetX || bot.Y != targetY {
+		if bot.X < targetX {
+			bot.X++
+		} else if bot.X > targetX {
+			bot.X--
+		}
+		bot.PublishPosition() // MQTT instead of UDP
+		time.Sleep(200 * time.Millisecond)
+
+		if bot.Y < targetY {
+			bot.Y++
+		} else if bot.Y > targetY {
+			bot.Y--
+		}
+		bot.PublishPosition() // MQTT instead of UDP
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	log.Printf("arrived at (%d,%d), fixing %s...", bot.X, bot.Y, task.ProblemType)
+
+	// Simulate fixing the problem (2 seconds)
+	time.Sleep(2 * time.Second)
+
+	log.Printf("fixed %s at (%d,%d)", task.ProblemType, bot.X, bot.Y)
+
+	// Report completion to coordinator
+	bot.reportCompletion(task.TaskId, true)
+
+	bot.Mu.Lock()
+	bot.Status = "idle"
+	bot.CurrentTask = nil
+	bot.Mu.Unlock()
+
+	log.Printf("task complete; staying at (%d,%d) and set to idle", bot.X, bot.Y)
 }

@@ -1,4 +1,10 @@
 services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    ports:
+      - "1884:1883"
+    command: mosquitto -c /mosquitto-no-auth.conf
+
   world:
     build:
       context: ../../
@@ -16,6 +22,9 @@ services:
       - "9002:9002"
     environment:
       - WORLD_ADDR=http://world:8081
+      - MQTT_BROKER=tcp://mosquitto:1883
+    depends_on:
+      - mosquitto
 
   detector:
     build:
@@ -24,10 +33,12 @@ services:
     depends_on:
       - coordinator
       - world
+      - mosquitto
     environment:
       - COORDINATOR_ADDR=http://coordinator:8080
       - WORLD_ADDR=http://world:8081
       - UDP_ADDR=coordinator:9001
+      - MQTT_BROKER=tcp://mosquitto:1883
     deploy:
       replicas: 3
 
@@ -37,12 +48,14 @@ services:
       dockerfile: deployments/docker/servicebot/Dockerfile
     depends_on:
       - coordinator
+      - mosquitto
     environment:
       - BOT_TYPE=cleaner
       - COORD_ADDR=http://coordinator:8080
       - COORD_UDP=coordinator:9001
       - COORD_GRPC=coordinator:9002
       - GRPC_PORT=50051
+      - MQTT_BROKER=tcp://mosquitto:1883
     deploy:
       replicas: 2
 
@@ -52,11 +65,13 @@ services:
       dockerfile: deployments/docker/servicebot/Dockerfile
     depends_on:
       - coordinator
+      - mosquitto
     environment:
       - BOT_TYPE=repair
       - COORD_ADDR=http://coordinator:8080
       - COORD_UDP=coordinator:9001
       - COORD_GRPC=coordinator:9002
       - GRPC_PORT=50051
+      - MQTT_BROKER=tcp://mosquitto:1883
     deploy:
       replicas: 2
