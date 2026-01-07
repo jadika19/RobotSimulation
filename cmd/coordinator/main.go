@@ -13,9 +13,6 @@ import (
 	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/mqtt"
 )
 
-// Mode switch: true = MQTT mode, false = UDP/HTTP mode
-const useMQTT = true
-
 func main() {
 	addr := ":8080"
 	grpcAddr := ":9002" // gRPC callback server port
@@ -31,14 +28,9 @@ func main() {
 	}
 	log.Println("coordinator listening on", addr)
 
-	// Start communication layer based on mode
-	if useMQTT {
-		log.Println("Starting in MQTT mode")
-		go startMQTTSubscriber()
-	} else {
-		log.Println("Starting in UDP/HTTP mode")
-		go coordinator.StartUDPListener(":9001", coordinator.St)
-	}
+	// Start MQTT subscriber for position and event messages
+	log.Println("Starting in MQTT mode")
+	go startMQTTSubscriber()
 
 	go coordinator.StartGRPCCallbackServer(grpcAddr, coordinator.St)
 

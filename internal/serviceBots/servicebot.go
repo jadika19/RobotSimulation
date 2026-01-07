@@ -38,9 +38,7 @@ type ServiceBot struct {
 	X, Y           int
 	Width          int
 	Height         int
-	udpConn        *net.UDPConn
 	mqttClient     *mqtt.Client
-	UDPAddr        string
 	CoordGRPCAddr  string // Coordinator gRPC callback address
 	Mu             sync.Mutex
 	CurrentTask    *taskpb.TaskRequest
@@ -91,36 +89,13 @@ func (bot *ServiceBot) Register(coordAddr string, grpcAddr string) error {
 	return nil
 }
 
-// ConnectUDP opens a UDP connection for position updates
-func (bot *ServiceBot) ConnectUDP(udpAddr string) error {
-	conn, err := net.Dial("udp", udpAddr)
-	if err != nil {
-		return err
-	}
-	bot.udpConn = conn.(*net.UDPConn)
-	bot.UDPAddr = udpAddr
-	return nil
-}
-
-// Close closes the UDP or MQTT connection
+// Close closes the MQTT connection
 func (bot *ServiceBot) Close() {
 	if bot.mqttClient != nil {
 		// Publish offline status before disconnecting
 		bot.PublishStatus("offline")
 		bot.mqttClient.Disconnect(1000)
 	}
-	if bot.udpConn != nil {
-		bot.udpConn.Close()
-	}
-}
-
-// SendPosition sends current position to coordinator via UDP
-func (bot *ServiceBot) SendPosition() {
-	if bot.udpConn == nil {
-		return
-	}
-	// Same format as detector: "id,x,y"
-	fmt.Fprintf(bot.udpConn, "%d,%d,%d", bot.ID, bot.X, bot.Y)
 }
 
 // AssignTask is called by the coordinator via gRPC
@@ -143,53 +118,8 @@ func (bot *ServiceBot) AssignTask(ctx context.Context, req *taskpb.TaskRequest) 
 }
 
 func (bot *ServiceBot) executeTask(task *taskpb.TaskRequest) {
-	// Choose execution mode based on active connection
-	if bot.mqttClient != nil {
-		bot.executeTaskMQTT(task)
-		return
-	}
-
-	// Default UDP mode execution
-	targetX := int(task.X)
-	targetY := int(task.Y)
-
-	log.Printf("moving from (%d,%d) to (%d,%d)", bot.X, bot.Y, targetX, targetY)
-
-	// Move to target position step by step
-	for bot.X != targetX || bot.Y != targetY {
-		if bot.X < targetX {
-			bot.X++
-		} else if bot.X > targetX {
-			bot.X--
-		}
-		bot.SendPosition()
-		time.Sleep(200 * time.Millisecond)
-
-		if bot.Y < targetY {
-			bot.Y++
-		} else if bot.Y > targetY {
-			bot.Y--
-		}
-		bot.SendPosition()
-		time.Sleep(200 * time.Millisecond)
-	}
-
-	log.Printf("arrived at (%d,%d), fixing %s...", bot.X, bot.Y, task.ProblemType)
-
-	// Simulate fixing the problem (2 seconds)
-	time.Sleep(2 * time.Second)
-
-	log.Printf("fixed %s at (%d,%d)", task.ProblemType, bot.X, bot.Y)
-
-	// Report completion to coordinator
-	bot.reportCompletion(task.TaskId, true)
-
-	bot.Mu.Lock()
-	bot.Status = "idle"
-	bot.CurrentTask = nil
-	bot.Mu.Unlock()
-
-	log.Printf("task complete; staying at (%d,%d) and set to idle", bot.X, bot.Y)
+	// MQTT mode execution
+	bot.executeTaskMQTT(task)
 }
 
 func (bot *ServiceBot) reportCompletion(taskID string, success bool) {
@@ -236,14 +166,6 @@ func (bot *ServiceBot) StartGRPCServer(addr string) error {
 	taskpb.RegisterTaskServiceServer(s, bot)
 	log.Printf("gRPC server listening on %s", addr)
 	return s.Serve(lis)
-}
-
-func OpenUDPConnection(addr string) (*net.UDPConn, error) {
-	conn, err := net.Dial("udp", addr)
-	if err != nil {
-		return nil, err
-	}
-	return conn.(*net.UDPConn), nil
 }
 
 // ---------- MQTT Mode Functions ----------
