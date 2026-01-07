@@ -1,0 +1,11 @@
+iteration,reconnect_ms,connected,msgs_before,msgs_after
+1,149,true,5,5
+2,120,true,5,5
+3,114,true,5,5
+4,126,true,5,5
+5,114,true,5,5
+6,126,true,5,5
+7,126,true,5,5
+8,124,true,5,5
+9,117,true,5,5
+10,123,true,5,5
