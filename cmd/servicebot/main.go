@@ -37,16 +37,20 @@ func main() {
 		grpcPort = "50051"
 	}
 
-	// Get hostname for unique identification
-	hostname, _ := os.Hostname()
-	grpcAddr := fmt.Sprintf("%s:%s", hostname, grpcPort)
+	// Advertised gRPC address: allow explicit override for compose/service DNS
+	grpcAdvertise := os.Getenv("GRPC_ADVERTISE")
+	if grpcAdvertise == "" {
+		hostname, _ := os.Hostname()
+		grpcAdvertise = fmt.Sprintf("%s:%s", hostname, grpcPort)
+	}
+	grpcAddr := grpcAdvertise
 
 	bot := servicebots.New(botType)
 
 	// Parse port for local server
 	port, _ := strconv.Atoi(grpcPort)
 	bot.GRPCPort = port
-	bot.GRPCListenAddr = grpcAddr
+	bot.GRPCAdvertise = grpcAdvertise
 
 	// Register with coordinator (for ID assignment only - no task assignment)
 	if err := bot.Register(coordHTTP, grpcAddr); err != nil {
@@ -74,7 +78,7 @@ func main() {
 
 	// Periodically publish full status so leader knows about all bots
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			bot.PublishFullStatus()

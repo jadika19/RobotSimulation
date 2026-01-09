@@ -161,7 +161,7 @@ func (bot *ServiceBot) InitializeElection() error {
 		X:        bot.X,
 		Y:        bot.Y,
 		Status:   bot.Status,
-		GRPCAddr: bot.GRPCListenAddr,
+		GRPCAddr: bot.GRPCAdvertise,
 		LastSeen: time.Now(),
 	}
 	bot.Election.mu.Unlock()
@@ -231,6 +231,9 @@ func (bot *ServiceBot) becomeLeader() {
 
 	// Start heartbeat goroutine
 	go bot.leaderHeartbeat()
+
+	// Periodically retry pending tasks while leader
+	go bot.pendingRetryLoop()
 
 	// Try to assign any pending tasks
 	go bot.tryAssignPendingTasks()
@@ -401,11 +404,15 @@ func (bot *ServiceBot) handleBotPosition(topic string, payload []byte) {
 	bot.Election.mu.Lock()
 	defer bot.Election.mu.Unlock()
 
-	if info, exists := bot.Election.KnownBots[pos.ID]; exists {
-		info.X = pos.X
-		info.Y = pos.Y
-		info.LastSeen = time.Now()
+	info, exists := bot.Election.KnownBots[pos.ID]
+	if !exists {
+		// Discover new bot from position if status message has not arrived yet
+		info = &BotInfo{ID: pos.ID, Status: "idle", LastSeen: time.Now()}
+		bot.Election.KnownBots[pos.ID] = info
 	}
+	info.X = pos.X
+	info.Y = pos.Y
+	info.LastSeen = time.Now()
 }
 
 // handleBotStatus updates known bot statuses
@@ -503,6 +510,10 @@ func (bot *ServiceBot) handleProblemEvent(topic string, payload []byte) {
 
 // assignTask assigns a task to the best available bot (leader function)
 func (bot *ServiceBot) assignTask(x, y int, problemType string) {
+
+	// log the problem type
+	log.Printf("[DIANA] Bot %d: assigning task for problem type: %s", bot.ID, problemType)
+
 	// Determine required robot type
 	var requiredType string
 	if problemType == "dirt" {
@@ -513,6 +524,9 @@ func (bot *ServiceBot) assignTask(x, y int, problemType string) {
 		log.Printf("[Leader] Bot %d: unknown problem type: %s", bot.ID, problemType)
 		return
 	}
+
+	// log the requiredType
+	log.Printf("[DIANA] Bot %d: required robot type for problem type %s is %s", bot.ID, problemType, requiredType)
 
 	bot.Election.mu.Lock()
 
@@ -536,6 +550,13 @@ func (bot *ServiceBot) assignTask(x, y int, problemType string) {
 			bestBot = info
 			bestDistance = distance
 		}
+	}
+
+	// log bestBot found and if not found log that as well
+	if bestBot != nil {
+		log.Printf("[DIANA] Bot %d: best bot found for problem type %s is bot %d at (%d,%d)", bot.ID, problemType, bestBot.ID, bestBot.X, bestBot.Y)
+	} else {
+		log.Printf("[DIANA] Bot %d: no suitable bot found for problem type %s", bot.ID, problemType)
 	}
 
 	if bestBot == nil {
@@ -630,8 +651,14 @@ func (bot *ServiceBot) markTaskPending(taskID string) {
 	defer bot.Election.mu.Unlock()
 
 	if task, exists := bot.Election.ActiveTasks[taskID]; exists {
+		assignedBot := task.AssignedTo
 		task.Status = "pending"
 		task.AssignedTo = -1
+
+		// If we had marked a bot busy, return it to idle so it can be selected again
+		if info, ok := bot.Election.KnownBots[assignedBot]; ok {
+			info.Status = "idle"
+		}
 		bot.Election.PendingTasks = append(bot.Election.PendingTasks, task)
 		delete(bot.Election.ActiveTasks, taskID)
 		log.Printf("[Leader] Bot %d: task %s moved to pending queue", bot.ID, taskID)
@@ -654,6 +681,24 @@ func (bot *ServiceBot) tryAssignPendingTasks() {
 	for _, task := range pendingCopy {
 		// Try to assign each pending task
 		bot.assignTask(task.X, task.Y, task.Type)
+	}
+}
+
+// pendingRetryLoop reattempts pending tasks on a short interval while this bot is leader
+func (bot *ServiceBot) pendingRetryLoop() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		bot.Election.mu.RLock()
+		isLeader := bot.Election.IsLeader
+		bot.Election.mu.RUnlock()
+
+		if !isLeader {
+			return
+		}
+
+		bot.tryAssignPendingTasks()
 	}
 }
 
@@ -720,7 +765,7 @@ func (bot *ServiceBot) PublishFullStatus() {
 		ID:       bot.ID,
 		Type:     bot.Type,
 		Status:   bot.Status,
-		GRPCAddr: bot.GRPCListenAddr,
+		GRPCAddr: bot.GRPCAdvertise,
 		X:        bot.X,
 		Y:        bot.Y,
 	}

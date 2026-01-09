@@ -43,7 +43,8 @@ type ServiceBot struct {
 	Mu             sync.Mutex
 	CurrentTask    *taskpb.TaskRequest
 	GRPCPort       int
-	GRPCListenAddr string
+	GRPCListenAddr string // local listen address (e.g., :50051)
+	GRPCAdvertise  string // address peers should dial (e.g., servicebot-1:50051)
 
 	// Election state for decentralized coordination
 	Election *ElectionState
@@ -112,7 +113,10 @@ func (bot *ServiceBot) AssignTask(ctx context.Context, req *taskpb.TaskRequest) 
 	bot.CurrentTask = req
 	bot.Mu.Unlock()
 
-	log.Printf("gRPC TaskService.AssignTask bot=%d type=%s addr=%s task=%s target=(%d,%d) problem=%s status=accepted", bot.ID, bot.Type, bot.GRPCListenAddr, req.TaskId, req.X, req.Y, req.ProblemType)
+	// Immediately publish status so leader and peers see the busy transition
+	bot.PublishFullStatus()
+
+	log.Printf("gRPC TaskService.AssignTask bot=%d type=%s addr=%s task=%s target=(%d,%d) problem=%s status=accepted", bot.ID, bot.Type, bot.GRPCAdvertise, req.TaskId, req.X, req.Y, req.ProblemType)
 
 	// Execute task in background
 	go bot.executeTask(req)
@@ -179,6 +183,7 @@ func (bot *ServiceBot) StartGRPCServer(addr string) error {
 	if err != nil {
 		return err
 	}
+	// Preserve advertise address; only update listen address for logging
 	bot.GRPCListenAddr = addr
 	logger := func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		start := time.Now()
@@ -302,6 +307,9 @@ func (bot *ServiceBot) executeTaskMQTT(task *taskpb.TaskRequest) {
 	bot.Status = "idle"
 	bot.CurrentTask = nil
 	bot.Mu.Unlock()
+
+	// Broadcast idle state so leader can immediately reassign queued work
+	bot.PublishFullStatus()
 
 	log.Printf("task complete; staying at (%d,%d) and set to idle", bot.X, bot.Y)
 }
