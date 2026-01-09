@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	servicebots "code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/serviceBots"
 )
@@ -15,11 +16,6 @@ func main() {
 		coordHTTP = "http://coordinator:8080"
 	}
 
-	coordGRPC := os.Getenv("COORD_GRPC")
-	if coordGRPC == "" {
-		coordGRPC = "coordinator:9002"
-	}
-
 	mqttBroker := os.Getenv("MQTT_BROKER")
 	if mqttBroker == "" {
 		mqttBroker = "tcp://mosquitto:1884"
@@ -28,6 +24,11 @@ func main() {
 	botType := os.Getenv("BOT_TYPE")
 	if botType == "" {
 		botType = "cleaner"
+	}
+
+	worldAddr := os.Getenv("WORLD_ADDR")
+	if worldAddr == "" {
+		worldAddr = "http://world:8081"
 	}
 
 	// Each bot needs a unique gRPC port - use GRPC_PORT env or default based on hostname
@@ -41,28 +42,57 @@ func main() {
 	grpcAddr := fmt.Sprintf("%s:%s", hostname, grpcPort)
 
 	bot := servicebots.New(botType)
-	bot.CoordGRPCAddr = coordGRPC
 
 	// Parse port for local server
 	port, _ := strconv.Atoi(grpcPort)
 	bot.GRPCPort = port
+	bot.GRPCListenAddr = grpcAddr
 
+	// Register with coordinator (for ID assignment only - no task assignment)
 	if err := bot.Register(coordHTTP, grpcAddr); err != nil {
 		log.Fatalf("failed to register %s bot: %v", botType, err)
 	}
 	log.Printf("%s bot registered: id=%d at (%d,%d)", botType, bot.ID, bot.X, bot.Y)
 
-	log.Println("Starting servicebot in MQTT mode")
+	// Connect to MQTT with LWT for leader detection
+	log.Println("Starting servicebot in MQTT mode with decentralized coordination")
 	if err := bot.ConnectMQTT(mqttBroker); err != nil {
 		log.Fatalf("failed to connect MQTT: %v", err)
 	}
 	defer bot.Close()
 
-	// Publish online status and initial position
-	bot.PublishStatus("online")
+	// Initialize election system
+	bot.Election = servicebots.NewElectionState()
+	bot.Election.WorldAddr = worldAddr
+	if err := bot.InitializeElection(); err != nil {
+		log.Fatalf("failed to initialize election: %v", err)
+	}
+
+	// Publish full status (including gRPC address) for other bots
+	bot.PublishFullStatus()
 	bot.PublishPosition()
 
-	log.Printf("%s bot id=%d is idle, waiting for tasks on gRPC %s...", botType, bot.ID, grpcAddr)
+	// Periodically publish full status so leader knows about all bots
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			bot.PublishFullStatus()
+		}
+	}()
+
+	// Start leader monitoring in background
+	go bot.MonitorLeader()
+
+	// Wait a bit for other bots to come online, then start election
+	log.Printf("%s bot id=%d waiting for other bots before starting election...", botType, bot.ID)
+	time.Sleep(3 * time.Second)
+
+	// Start election to determine initial leader
+	log.Printf("%s bot id=%d starting initial election", botType, bot.ID)
+	go bot.StartElection()
+
+	log.Printf("%s bot id=%d is ready, waiting for tasks on gRPC %s...", botType, bot.ID, grpcAddr)
 
 	// Start gRPC server to receive tasks (blocks forever)
 	localAddr := fmt.Sprintf(":%s", grpcPort)

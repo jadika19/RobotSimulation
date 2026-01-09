@@ -15,7 +15,6 @@ import (
 
 func main() {
 	addr := ":8080"
-	grpcAddr := ":9002" // gRPC callback server port
 
 	// Allow overriding via environment
 	if v := os.Getenv("WORLD_ADDR"); v != "" {
@@ -27,12 +26,13 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Println("coordinator listening on", addr)
+	log.Println("NOTE: Task assignment is now handled by elected service bot leader")
 
-	// Start MQTT subscriber for position and event messages
-	log.Println("Starting in MQTT mode")
+	// Start MQTT subscriber for position updates only (no task assignment)
+	log.Println("Starting in MQTT mode (position tracking only)")
 	go startMQTTSubscriber()
 
-	go coordinator.StartGRPCCallbackServer(grpcAddr, coordinator.St)
+	// No gRPC callback server needed - service bots handle this now
 
 	for {
 		conn, err := ln.Accept()
@@ -67,7 +67,7 @@ func startMQTTSubscriber() {
 		log.Fatalf("Failed to subscribe to position topics: %v", err)
 	}
 
-	// Subscribe to problem events
+	// Subscribe to problem events (for tracking/display only - leader handles assignment)
 	err = client.Subscribe("events/problems", handleEventMessage)
 	if err != nil {
 		log.Fatalf("Failed to subscribe to events/problems: %v", err)
@@ -79,7 +79,19 @@ func startMQTTSubscriber() {
 		log.Fatalf("Failed to subscribe to status topics: %v", err)
 	}
 
-	log.Println("Subscribed to MQTT topics: devices/+/+/position, events/problems, devices/+/+/status")
+	// Subscribe to election announcements to track current leader
+	err = client.Subscribe("servicebots/election/announce", handleLeaderAnnouncement)
+	if err != nil {
+		log.Fatalf("Failed to subscribe to election announcements: %v", err)
+	}
+
+	// Subscribe to problem solved events to update coordinator view
+	err = client.Subscribe("events/problems/solved", handleProblemSolved)
+	if err != nil {
+		log.Fatalf("Failed to subscribe to problem solved: %v", err)
+	}
+
+	log.Println("Subscribed to MQTT topics for position/status tracking (task assignment handled by leader bot)")
 
 	// Keep the subscriber running
 	select {}
@@ -114,21 +126,18 @@ func handleEventMessage(topic string, payload []byte) {
 		return
 	}
 
-	log.Printf("problem reported: %s at (%d,%d) by detector %d", event.Type, event.X, event.Y, event.DetectorID)
+	log.Printf("problem reported: %s at (%d,%d) by detector %d (leader bot will handle assignment)",
+		event.Type, event.X, event.Y, event.DetectorID)
 
-	// Check if problem already known (avoid duplicates)
+	// Track problem for display purposes only
 	key := coordKey(event.X, event.Y)
 	coordinator.St.Mu.Lock()
-	if _, exists := coordinator.St.KnownProblems[key]; exists {
-		coordinator.St.Mu.Unlock()
-		return
+	if _, exists := coordinator.St.KnownProblems[key]; !exists {
+		coordinator.St.KnownProblems[key] = coordinator.Problem{X: event.X, Y: event.Y, Type: event.Type}
 	}
-	// Add to KnownProblems
-	coordinator.St.KnownProblems[key] = coordinator.Problem{X: event.X, Y: event.Y, Type: event.Type}
 	coordinator.St.Mu.Unlock()
 
-	// Trigger task assignment in background
-	go coordinator.AssignTask(coordinator.St, event.X, event.Y, event.Type)
+	// NOTE: Task assignment is now handled by the elected leader bot
 }
 
 func handleStatusMessage(topic string, payload []byte) {
@@ -174,4 +183,42 @@ func clamp(val, min, max int) int {
 
 func coordKey(x, y int) string {
 	return fmt.Sprintf("%d,%d", x, y)
+}
+
+func handleProblemSolved(topic string, payload []byte) {
+	var msg struct {
+		X int `json:"x"`
+		Y int `json:"y"`
+	}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		log.Printf("Failed to unmarshal problem solved message: %v", err)
+		return
+	}
+
+	key := coordKey(msg.X, msg.Y)
+	coordinator.St.Mu.Lock()
+	if _, exists := coordinator.St.KnownProblems[key]; exists {
+		delete(coordinator.St.KnownProblems, key)
+		log.Printf("Problem at (%d,%d) solved and removed from coordinator view", msg.X, msg.Y)
+	}
+	coordinator.St.Mu.Unlock()
+}
+
+func handleLeaderAnnouncement(topic string, payload []byte) {
+	var announcement struct {
+		LeaderID  int    `json:"leaderId"`
+		Timestamp string `json:"timestamp"`
+	}
+	if err := json.Unmarshal(payload, &announcement); err != nil {
+		return
+	}
+
+	coordinator.St.Mu.Lock()
+	previousLeader := coordinator.St.LeaderID
+	coordinator.St.LeaderID = announcement.LeaderID
+	coordinator.St.Mu.Unlock()
+
+	if announcement.LeaderID != previousLeader {
+		log.Printf("Service bot leader changed: bot %d is now the leader", announcement.LeaderID)
+	}
 }

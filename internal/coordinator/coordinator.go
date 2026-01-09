@@ -48,6 +48,7 @@ type State struct {
 	NextID        int
 	NextTaskID    int
 	Robots        map[int]Robot
+	LeaderID      int
 	Width         int
 	Height        int
 	KnownProblems map[string]Problem // Only problems reported by detectors
@@ -304,6 +305,7 @@ func handleMapRequest(c net.Conn, st *State) {
 		"robots":   robots,
 		"problems": problems,
 		"tasks":    tasks,
+		"leaderID": st.LeaderID,
 	}
 	st.Mu.RUnlock()
 	b, _ := json.MarshalIndent(resp, "", "  ")

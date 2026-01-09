@@ -39,11 +39,14 @@ type ServiceBot struct {
 	Width          int
 	Height         int
 	mqttClient     *mqtt.Client
-	CoordGRPCAddr  string // Coordinator gRPC callback address
+	CoordGRPCAddr  string // Coordinator gRPC callback address (deprecated, kept for compatibility)
 	Mu             sync.Mutex
 	CurrentTask    *taskpb.TaskRequest
 	GRPCPort       int
 	GRPCListenAddr string
+
+	// Election state for decentralized coordination
+	Election *ElectionState
 }
 
 // New creates a new service bot with the given type
@@ -123,14 +126,36 @@ func (bot *ServiceBot) executeTask(task *taskpb.TaskRequest) {
 }
 
 func (bot *ServiceBot) reportCompletion(taskID string, success bool) {
+	// Report completion to the current leader via MQTT
+	bot.Election.mu.RLock()
+	isLeader := bot.Election.IsLeader
+	currentLeaderID := bot.Election.CurrentLeaderID
+	bot.Election.mu.RUnlock()
+
+	// If I am the leader, handle completion locally
+	if isLeader {
+		bot.HandleTaskCompletion(taskID, bot.ID, success)
+		return
+	}
+
+	// Find leader's gRPC address and report
+	bot.Election.mu.RLock()
+	leaderInfo, exists := bot.Election.KnownBots[currentLeaderID]
+	bot.Election.mu.RUnlock()
+
+	if !exists || leaderInfo.GRPCAddr == "" {
+		log.Printf("[Bot %d] Cannot report completion: leader %d not found or no gRPC address", bot.ID, currentLeaderID)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	log.Printf("gRPC TaskCallback.ReportCompletion dialing=%s bot=%d task=%s", bot.CoordGRPCAddr, bot.ID, taskID)
+	log.Printf("[Bot %d] Reporting task %s completion to leader %d at %s", bot.ID, taskID, currentLeaderID, leaderInfo.GRPCAddr)
 
-	conn, err := grpc.DialContext(ctx, bot.CoordGRPCAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.DialContext(ctx, leaderInfo.GRPCAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Printf("failed to connect to coordinator gRPC: %v", err)
+		log.Printf("[Bot %d] Failed to connect to leader gRPC: %v", bot.ID, err)
 		return
 	}
 	defer conn.Close()
@@ -142,13 +167,13 @@ func (bot *ServiceBot) reportCompletion(taskID string, success bool) {
 		Success: success,
 	})
 	if err != nil {
-		log.Printf("failed to report completion: %v", err)
+		log.Printf("[Bot %d] Failed to report completion: %v", bot.ID, err)
 		return
 	}
-	log.Printf("gRPC TaskCallback.ReportCompletion bot=%d task=%s success=%v acknowledged=%v", bot.ID, taskID, success, resp.Acknowledged)
+	log.Printf("[Bot %d] Task %s completion reported, acknowledged=%v", bot.ID, taskID, resp.Acknowledged)
 }
 
-// StartGRPCServer starts the gRPC server for receiving tasks
+// StartGRPCServer starts the gRPC server for receiving tasks and (if leader) task completions
 func (bot *ServiceBot) StartGRPCServer(addr string) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -164,8 +189,29 @@ func (bot *ServiceBot) StartGRPCServer(addr string) error {
 	}
 	s := grpc.NewServer(grpc.UnaryInterceptor(logger))
 	taskpb.RegisterTaskServiceServer(s, bot)
+	// Also register callback service so leader can receive completions
+	taskpb.RegisterTaskCallbackServiceServer(s, &BotCallbackServer{Bot: bot})
 	log.Printf("gRPC server listening on %s", addr)
 	return s.Serve(lis)
+}
+
+// BotCallbackServer implements TaskCallbackService for receiving completion reports (when leader)
+type BotCallbackServer struct {
+	taskpb.UnimplementedTaskCallbackServiceServer
+	Bot *ServiceBot
+}
+
+// ReportCompletion handles task completion reports (called when this bot is leader)
+func (s *BotCallbackServer) ReportCompletion(ctx context.Context, req *taskpb.CompletionRequest) (*taskpb.CompletionResponse, error) {
+	log.Printf("[Leader] Bot %d: received completion report for task %s from bot %d", s.Bot.ID, req.TaskId, req.RobotId)
+
+	if s.Bot.Election == nil || !s.Bot.Election.IsLeader {
+		log.Printf("[Leader] Bot %d: not the leader, ignoring completion report", s.Bot.ID)
+		return &taskpb.CompletionResponse{Acknowledged: false}, nil
+	}
+
+	s.Bot.HandleTaskCompletion(req.TaskId, int(req.RobotId), req.Success)
+	return &taskpb.CompletionResponse{Acknowledged: true}, nil
 }
 
 // ---------- MQTT Mode Functions ----------
@@ -227,23 +273,19 @@ func (bot *ServiceBot) executeTaskMQTT(task *taskpb.TaskRequest) {
 
 	log.Printf("moving from (%d,%d) to (%d,%d)", bot.X, bot.Y, targetX, targetY)
 
-	// Move to target position step by step
+	// Move to target position step by step (cardinal directions only - no diagonal)
 	for bot.X != targetX || bot.Y != targetY {
 		if bot.X < targetX {
 			bot.X++
 		} else if bot.X > targetX {
 			bot.X--
-		}
-		bot.PublishPosition() // MQTT instead of UDP
-		time.Sleep(200 * time.Millisecond)
-
-		if bot.Y < targetY {
+		} else if bot.Y < targetY {
 			bot.Y++
 		} else if bot.Y > targetY {
 			bot.Y--
 		}
 		bot.PublishPosition() // MQTT instead of UDP
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	log.Printf("arrived at (%d,%d), fixing %s...", bot.X, bot.Y, task.ProblemType)

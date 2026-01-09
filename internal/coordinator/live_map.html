@@ -73,6 +73,17 @@
   </head>
   <body>
     <h1>Live Robot Map (20x20)</h1>
+    <p
+      id="leader-info"
+      style="
+        font-size: 14px;
+        font-weight: bold;
+        color: #ffcc00;
+        margin-bottom: 8px;
+      "
+    >
+      Current Leader: <span id="leader-id">-</span>
+    </p>
     <p>
       Left click = dirt (green), right click = defect (red). Problems placed in
       World View, discovered in Coordinator View.
@@ -207,6 +218,15 @@
           const coordData = await coordRes.json();
 
           const { width, height, robots } = worldData;
+
+          // Update leader display
+          const leaderIdEl = document.getElementById("leader-id");
+          if (leaderIdEl) {
+            const leaderID = coordData.leaderID || 0;
+            leaderIdEl.textContent =
+              leaderID > 0 ? `Bot ${leaderID}` : "None (election in progress)";
+            leaderIdEl.style.color = leaderID > 0 ? "#00ff00" : "#ff6666";
+          }
 
           if (!worldCells || worldCells.length !== width * height) {
             worldCells = buildEmptyGrid(worldGridEl, width, height);
