@@ -40,7 +40,7 @@ services:
       - UDP_ADDR=coordinator:9001
       - MQTT_BROKER=tcp://mosquitto:1883
     deploy:
-      replicas: 1
+      replicas: 3
 
   cleaner:
     build:
