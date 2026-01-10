@@ -25,6 +25,11 @@ func main() {
 		mqttBroker = "tcp://mosquitto:1884"
 	}
 
+	worldHTTP := os.Getenv("WORLD_ADDR")
+	if worldHTTP == "" {
+		worldHTTP = "http://world:8081"
+	}
+
 	botType := os.Getenv("BOT_TYPE")
 	if botType == "" {
 		botType = "cleaner"
@@ -42,10 +47,14 @@ func main() {
 
 	bot := servicebots.New(botType)
 	bot.CoordGRPCAddr = coordGRPC
+	bot.WorldAddr = worldHTTP
 
 	// Parse port for local server
 	port, _ := strconv.Atoi(grpcPort)
 	bot.GRPCPort = port
+
+	// Set the full gRPC address (with hostname) for metadata publishing
+	bot.GRPCListenAddr = grpcAddr
 
 	if err := bot.Register(coordHTTP, grpcAddr); err != nil {
 		log.Fatalf("failed to register %s bot: %v", botType, err)
@@ -61,6 +70,18 @@ func main() {
 	// Publish online status and initial position
 	bot.PublishStatus("online")
 	bot.PublishPosition()
+
+	// Publish initial metadata (retained message for state discovery)
+	bot.PublishMetadata()
+
+	// Start leader election loop (only for service bots, not detectors)
+	if botType == "cleaner" || botType == "repair" {
+		log.Printf("%s bot id=%d starting leader election", botType, bot.ID)
+		go bot.StartElectionLoop()
+
+		// Start task management (subscribes to tasks/new)
+		go bot.StartTaskManagement()
+	}
 
 	log.Printf("%s bot id=%d is idle, waiting for tasks on gRPC %s...", botType, bot.ID, grpcAddr)
 

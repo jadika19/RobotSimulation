@@ -168,7 +168,7 @@ func WalkMQTT(ctx context.Context, r *RegResp, client *mqtt.Client, worldAddr st
 			key := fmt.Sprintf("%d,%d", x, y)
 			if !reported[key] {
 				reported[key] = true
-				// Publish event via MQTT
+				// Publish event to coordinator (for monitoring)
 				go func(px, py int, et string) {
 					eventMsg := mqtt.EventMessage{
 						DetectorID: r.ID,
@@ -179,6 +179,22 @@ func WalkMQTT(ctx context.Context, r *RegResp, client *mqtt.Client, worldAddr st
 					}
 					if err := client.PublishEvent(eventMsg); err != nil {
 						log.Printf("Failed to publish event %s at (%d,%d): %v", et, px, py, err)
+					}
+				}(x, y, eventType)
+
+				// Publish new task for leader to assign
+				go func(px, py int, et string) {
+					taskMsg := mqtt.TaskMessage{
+						TaskID:    fmt.Sprintf("task-%d-%d-%d", r.ID, px, py),
+						X:         px,
+						Y:         py,
+						Type:      et,
+						Timestamp: time.Now().Format(time.RFC3339),
+					}
+					if err := client.PublishNewTask(taskMsg); err != nil {
+						log.Printf("Failed to publish task %s at (%d,%d): %v", et, px, py, err)
+					} else {
+						log.Printf("Published new task %s at (%d,%d) type=%s", taskMsg.TaskID, px, py, et)
 					}
 				}(x, y, eventType)
 			}
