@@ -73,6 +73,9 @@
   </head>
   <body>
     <h1>Live Robot Map (20x20)</h1>
+    <div id="leader-status" style="font-size: 18px; margin: 10px 0; padding: 10px; background: #333; border-radius: 5px;">
+      <strong>Leader Status:</strong> <span id="leader-text">election in progress...</span>
+    </div>
     <p>
       Left click = dirt (green), right click = defect (red). Problems placed in
       World View, discovered in Coordinator View.
@@ -243,6 +246,28 @@
           }
         } catch (e) {
           // ignore
+        }
+
+        // Fetch leader status
+        try {
+          const leaderRes = await fetch(WORLD_URL + "/leader-status");
+          if (leaderRes.ok) {
+            const leaderData = await leaderRes.json();
+            updateLeaderStatus(leaderData);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      function updateLeaderStatus(data) {
+        const leaderText = document.getElementById("leader-text");
+        if (data.active && data.leaderId >= 0) {
+          leaderText.textContent = "Leader is Bot " + data.leaderId;
+          leaderText.style.color = "#4CAF50";
+        } else {
+          leaderText.textContent = "election in progress...";
+          leaderText.style.color = "#FFA500";
         }
       }
 
