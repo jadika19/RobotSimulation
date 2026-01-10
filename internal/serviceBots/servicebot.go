@@ -62,6 +62,7 @@ type ServiceBot struct {
 	AssignedTasks map[string]*TaskInfo       // Tasks currently being executed
 	TaskEventLog  []mqtt.TaskAssignmentEvent // Event sourcing log
 	TaskMu        sync.RWMutex               // Protects task state
+	TaskStop      chan struct{}              // Cancels current task execution
 }
 
 // BotInfo tracks information about a bot in the system
@@ -157,6 +158,7 @@ func (bot *ServiceBot) AssignTask(ctx context.Context, req *taskpb.TaskRequest) 
 	}
 	bot.Status = "busy"
 	bot.CurrentTask = req
+	bot.TaskStop = make(chan struct{})
 	bot.Mu.Unlock()
 	// Publish updated metadata (now busy)
 	go bot.PublishMetadata()
@@ -339,6 +341,13 @@ func (bot *ServiceBot) executeTaskMQTT(task *taskpb.TaskRequest) {
 
 	// Move to target position step by step (N4 neighborhood only - one step per iteration)
 	for bot.X != targetX || bot.Y != targetY {
+		select {
+		case <-bot.TaskStop:
+			log.Printf("task %s cancelled before arrival", task.TaskId)
+			return
+		default:
+		}
+
 		// Prioritize X-axis movement, then Y-axis (one step only per iteration)
 		if bot.X < targetX {
 			bot.X++
@@ -356,10 +365,24 @@ func (bot *ServiceBot) executeTaskMQTT(task *taskpb.TaskRequest) {
 
 	log.Printf("arrived at (%d,%d), fixing %s...", bot.X, bot.Y, task.ProblemType)
 
+	select {
+	case <-bot.TaskStop:
+		log.Printf("task %s cancelled during repair", task.TaskId)
+		return
+	default:
+	}
+
 	// Simulate fixing the problem (2 seconds)
 	time.Sleep(2 * time.Second)
 
 	log.Printf("fixed %s at (%d,%d)", task.ProblemType, bot.X, bot.Y)
+
+	select {
+	case <-bot.TaskStop:
+		log.Printf("task %s cancelled before delete", task.TaskId)
+		return
+	default:
+	}
 
 	// Delete problem from world service
 	bot.deleteProblemFromWorld(bot.X, bot.Y)

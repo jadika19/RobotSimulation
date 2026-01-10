@@ -72,6 +72,8 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 		handleProblemAt(c, st, body)
 	case method == "DELETE" && path == "/problem":
 		handleProblemDelete(c, st, body)
+	case method == "POST" && path == "/kill-bot":
+		handleKillBot(c, st, body)
 	case method == "GET" || method == "POST" || method == "DELETE":
 		writeText(c, 404, "Not Found")
 	default:
@@ -201,6 +203,35 @@ func handleProblemUpsert(c net.Conn, st *State, body string) {
 	st.Mu.Unlock()
 	log.Printf("problem placed: %s at (%d,%d)", typ, req.X, req.Y)
 	writeText(c, 200, "stored")
+}
+
+func handleKillBot(c net.Conn, st *State, body string) {
+	var req struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		writeText(c, 400, "invalid json")
+		return
+	}
+	if req.ID <= 0 {
+		writeText(c, 400, "invalid bot id")
+		return
+	}
+	if st.MqttClient == nil {
+		writeText(c, 503, "mqtt not ready")
+		return
+	}
+
+	topic := fmt.Sprintf("bots/kill/%d", req.ID)
+	payload := map[string]int{"id": req.ID}
+	if err := st.MqttClient.Publish(topic, payload); err != nil {
+		log.Printf("[WORLD] failed to publish kill for bot %d: %v", req.ID, err)
+		writeText(c, 500, "failed")
+		return
+	}
+
+	log.Printf("[WORLD] kill request forwarded for bot %d", req.ID)
+	writeText(c, 200, "ok")
 }
 
 func handleProblemAt(c net.Conn, st *State, body string) {

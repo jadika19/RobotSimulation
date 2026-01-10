@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"strconv"
+	"strings"
 	"time"
 
 	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/mqtt"
@@ -97,6 +99,12 @@ func (bot *ServiceBot) subscribeToElectionTopics() error {
 	victoryTopic := "election/victory/+"
 	if err := bot.mqttClient.Subscribe(victoryTopic, bot.handleVictory); err != nil {
 		return fmt.Errorf("subscribe to victory: %w", err)
+	}
+
+	// Subscribe to kill commands
+	killTopic := "bots/kill/+"
+	if err := bot.mqttClient.Subscribe(killTopic, bot.handleKillCommand); err != nil {
+		return fmt.Errorf("subscribe to kill: %w", err)
 	}
 
 	log.Printf("[ELECTION] Bot %d subscribed to election topics", bot.ID)
@@ -432,6 +440,56 @@ func (bot *ServiceBot) handleVictory(topic string, payload []byte) {
 
 	// If new leader, re-publish our metadata for state recovery
 	go bot.PublishMetadata()
+}
+
+// handleKillCommand processes external kill requests for bots.
+// If the target is this bot, it marks itself offline and disconnects.
+// If this bot is leader and another bot is killed, it re-queues that bot's tasks.
+func (bot *ServiceBot) handleKillCommand(topic string, payload []byte) {
+	parts := strings.Split(topic, "/")
+	if len(parts) == 0 {
+		return
+	}
+	idStr := parts[len(parts)-1]
+	targetID, err := strconv.Atoi(idStr)
+	if err != nil || targetID <= 0 {
+		// Try to read from payload as fallback
+		var body struct {
+			ID int `json:"id"`
+		}
+		if json.Unmarshal(payload, &body) == nil && body.ID > 0 {
+			targetID = body.ID
+		}
+	}
+	if targetID <= 0 {
+		return
+	}
+
+	if targetID == bot.ID {
+		log.Printf("[CONTROL] Bot %d received kill command; shutting down", bot.ID)
+		bot.Mu.Lock()
+		bot.Status = "offline"
+		bot.LeaderState = StateFollower
+		bot.Mu.Unlock()
+		if bot.TaskStop != nil {
+			close(bot.TaskStop)
+		}
+		bot.stopHeartbeat()
+		if bot.mqttClient != nil {
+			_ = bot.mqttClient.PublishStatus("servicebot", bot.ID, "offline")
+			bot.mqttClient.Disconnect(500)
+		}
+		return
+	}
+
+	bot.Mu.Lock()
+	isLeader := bot.LeaderState == StateLeader
+	bot.Mu.Unlock()
+
+	if isLeader {
+		log.Printf("[CONTROL] Leader bot %d handling kill for bot %d", bot.ID, targetID)
+		bot.handleBotDeath(targetID)
+	}
 }
 
 // handleBotMetadata processes bot metadata messages (state recovery)

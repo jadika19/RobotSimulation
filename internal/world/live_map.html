@@ -156,6 +156,22 @@
         >Defect</span
       >
     </p>
+    <div style="margin: 8px 0; display: flex; align-items: center; gap: 8px">
+      <label for="bot-select" style="font-size: 14px; color: #ccc"
+        >Service Bot:</label
+      >
+      <select id="bot-select" style="padding: 6px 8px; border-radius: 4px">
+        <option value="">– select –</option>
+      </select>
+      <button
+        id="kill-bot-btn"
+        style="padding: 6px 10px; border-radius: 4px; cursor: pointer"
+        title="Send kill command to service bot"
+      >
+        💀 Kill Bot
+      </button>
+      <span id="kill-status" style="font-size: 12px; color: #aaa"></span>
+    </div>
     <div class="container">
       <div class="map-section">
         <h2>World View (All Problems)</h2>
@@ -175,6 +191,9 @@
       const worldGridEl = document.getElementById("world-grid");
       const coordGridEl = document.getElementById("coord-grid");
       const worldOverlayEl = document.getElementById("world-overlay");
+      const botSelectEl = document.getElementById("bot-select");
+      const killBtnEl = document.getElementById("kill-bot-btn");
+      const killStatusEl = document.getElementById("kill-status");
 
       // URLs for the two services - use same host but different ports
       const WORLD_URL = ""; // Same origin (world service serves this page)
@@ -201,6 +220,8 @@
       let worldCells = null;
       let coordCells = null;
       let leaderActive = false;
+      let knownBots = [];
+      let knownBotsKey = "";
 
       function renderGrid(cells, width, robots, problems) {
         // clear all cells
@@ -266,6 +287,8 @@
               coordCells = buildEmptyGrid(coordGridEl, width, height);
             }
             renderGrid(coordCells, width, robots, coordProblems);
+
+            updateBotSelect(robots);
           }
         } catch (e) {
           // ignore
@@ -317,6 +340,8 @@
         // Toggle world interaction based on leader presence
         worldGridEl.classList.toggle("disabled", !leaderActive);
         worldOverlayEl.classList.toggle("visible", !leaderActive);
+
+        killBtnEl.disabled = !leaderActive || botSelectEl.value === "";
       }
 
       update();
@@ -345,6 +370,74 @@
         const cell = ev.target.closest(".cell");
         if (!cell || cell.dataset.x === undefined) return;
         sendProblem(Number(cell.dataset.x), Number(cell.dataset.y), "defect");
+      });
+
+      function updateBotSelect(robots) {
+        const filtered = (robots || []).filter((r) => {
+          const type = r.type || r.Type || "";
+          return type === "cleaner" || type === "repair";
+        });
+
+        const key = filtered
+          .map((b) => String(b.ID || b.id))
+          .sort()
+          .join(",");
+
+        // If list didn't change, don't rebuild to avoid jitter.
+        if (key === knownBotsKey) {
+          return;
+        }
+
+        knownBotsKey = key;
+        knownBots = filtered;
+        const prev = botSelectEl.value;
+
+        botSelectEl.innerHTML = '<option value="">– select –</option>';
+        knownBots.forEach((b) => {
+          const label = `${b.ID ?? b.id} (${b.type || b.Type || ""})`;
+          const option = document.createElement("option");
+          option.value = String(b.ID || b.id);
+          option.textContent = label;
+          botSelectEl.appendChild(option);
+        });
+
+        if (knownBots.some((b) => String(b.ID || b.id) === prev)) {
+          botSelectEl.value = prev;
+        }
+
+        killBtnEl.disabled = !leaderActive || botSelectEl.value === "";
+      }
+
+      async function killSelectedBot() {
+        const id = botSelectEl.value;
+        if (!id) {
+          killStatusEl.textContent = "Select a bot first.";
+          return;
+        }
+        killBtnEl.disabled = true;
+        killStatusEl.textContent = "Sending kill...";
+        try {
+          const res = await fetch(WORLD_URL + "/kill-bot", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id: Number(id) }),
+          });
+          if (res.ok) {
+            killStatusEl.textContent = `Kill sent to bot ${id}`;
+          } else {
+            killStatusEl.textContent = `Kill failed (${res.status})`;
+          }
+        } catch (e) {
+          killStatusEl.textContent = "Kill failed (network)";
+        } finally {
+          killBtnEl.disabled = !leaderActive || botSelectEl.value === "";
+          setTimeout(() => (killStatusEl.textContent = ""), 2000);
+        }
+      }
+
+      killBtnEl.addEventListener("click", killSelectedBot);
+      botSelectEl.addEventListener("change", () => {
+        killBtnEl.disabled = !leaderActive || botSelectEl.value === "";
       });
     </script>
   </body>
