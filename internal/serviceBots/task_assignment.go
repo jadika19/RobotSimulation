@@ -303,6 +303,34 @@ func (bot *ServiceBot) monitorTaskTimeouts() {
 	}
 }
 
+// handleBotDeath is triggered when a bot goes offline while holding tasks.
+// It re-queues any tasks assigned to that bot using the existing failure path.
+func (bot *ServiceBot) handleBotDeath(deadBotID int) {
+	bot.TaskMu.Lock()
+	if botInfo, exists := bot.KnownBots[deadBotID]; exists {
+		botInfo.Status = "offline"
+		botInfo.TaskID = ""
+	}
+
+	tasksToFail := make([]string, 0)
+	for taskID, task := range bot.AssignedTasks {
+		if task.RobotID == deadBotID {
+			tasksToFail = append(tasksToFail, taskID)
+		}
+	}
+	bot.TaskMu.Unlock()
+
+	if len(tasksToFail) > 0 {
+		log.Printf("[LEADER] Bot %d is offline, re-queuing %d task(s)", deadBotID, len(tasksToFail))
+	} else {
+		log.Printf("[LEADER] Bot %d is offline, no tasks to re-queue", deadBotID)
+	}
+
+	for _, taskID := range tasksToFail {
+		bot.handleTaskAssignmentFailure(taskID)
+	}
+}
+
 // handleTaskEvent processes task events (event sourcing for state recovery)
 func (bot *ServiceBot) handleTaskEvent(topic string, payload []byte) {
 	var event mqtt.TaskAssignmentEvent

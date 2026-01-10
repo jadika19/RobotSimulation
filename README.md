@@ -66,6 +66,7 @@ docker compose up
 
 - `http://localhost:8081/live-map` (wenn lokal) oder `http://<host-ip>:8081/live-map`
 - Linke Ansicht: Welt (alle Probleme), rechte Ansicht: Koordinator (nur entdeckte Probleme + Bots)
+- Service-Bots können über die Live-Map gezielt beendet werden (Dropdown + 💀 Kill Bot); der Leader setzt sie offline und queue’t deren Aufgaben neu.
 
 4. **Zusätzliche Detektoren starten:**
 
@@ -203,6 +204,19 @@ go test ./internal/detector -bench=.
 ```bash
 go test -v -run "TestRobotFailure" ./internal/coordinator/
 ```
+
+4. **Service-Bot Leader-Election Functional Test:**
+
+Verifiziert, dass nach Ausfall des Leaders automatisch eine Wahl gestartet wird und ein neuer Leader bestimmt wird. Läuft rein in-memory (Fake-MQTT), benötigt keinen Broker.
+
+```bash
+go test -v -run TestElectionPromotesFollowerWhenLeaderDies ./internal/serviceBots/
+```
+
+Zusätzliche Szenarien (im selben Paket, ebenfalls in-memory):
+
+- Gleichzeitige Wahlen wählen deterministisch den Bot mit der höchsten ID als Leader (keine Konflikte bei parallelen Problemen).
+- Ein zugewiesener Bot fällt während eines Tasks aus: Der Leader markiert den Bot offline und re-queued die Aufgabe (Assigned → Pending) für die Neuvergabe.
 
 ---
 

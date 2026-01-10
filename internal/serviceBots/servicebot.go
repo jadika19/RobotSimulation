@@ -38,7 +38,7 @@ type ServiceBot struct {
 	X, Y           int
 	Width          int
 	Height         int
-	mqttClient     *mqtt.Client
+	mqttClient     MQTTClient
 	CoordGRPCAddr  string // Coordinator gRPC callback address
 	WorldAddr      string // World HTTP address
 	Mu             sync.Mutex

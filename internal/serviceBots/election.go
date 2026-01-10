@@ -242,10 +242,11 @@ func (bot *ServiceBot) becomeFollower(leaderID int, term int) {
 func (bot *ServiceBot) startHeartbeat() {
 	bot.stopHeartbeat() // Stop any existing ticker
 
-	bot.HeartbeatTicker = time.NewTicker(HeartbeatInterval)
+	ticker := time.NewTicker(HeartbeatInterval)
+	bot.HeartbeatTicker = ticker
 
-	go func() {
-		for range bot.HeartbeatTicker.C {
+	go func(t *time.Ticker) {
+		for range t.C {
 			bot.Mu.Lock()
 			if bot.LeaderState != StateLeader {
 				bot.Mu.Unlock()
@@ -264,7 +265,7 @@ func (bot *ServiceBot) startHeartbeat() {
 				log.Printf("[ELECTION] ERROR: Failed to publish heartbeat: %v", err)
 			}
 		}
-	}()
+	}(ticker)
 }
 
 // stopHeartbeat stops sending heartbeats
