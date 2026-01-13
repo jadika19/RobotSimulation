@@ -66,6 +66,7 @@ docker compose up
 
 - `http://localhost:8081/live-map` (wenn lokal) oder `http://<host-ip>:8081/live-map`
 - Linke Ansicht: Welt (alle Probleme), rechte Ansicht: Koordinator (nur entdeckte Probleme + Bots)
+- Service-Bots können über die Live-Map gezielt beendet werden (Dropdown + 💀 Kill Bot); der Leader setzt sie offline und queue’t deren Aufgaben neu.
 
 4. **Zusätzliche Detektoren starten:**
 
@@ -204,6 +205,19 @@ go test ./internal/detector -bench=.
 go test -v -run "TestRobotFailure" ./internal/coordinator/
 ```
 
+4. **Service-Bot Leader-Election Functional Test:**
+
+Verifiziert, dass nach Ausfall des Leaders automatisch eine Wahl gestartet wird und ein neuer Leader bestimmt wird. Läuft rein in-memory (Fake-MQTT), benötigt keinen Broker.
+
+```bash
+go test -v -run TestElectionPromotesFollowerWhenLeaderDies ./internal/serviceBots/
+```
+
+Zusätzliche Szenarien (im selben Paket, ebenfalls in-memory):
+
+- Gleichzeitige Wahlen wählen deterministisch den Bot mit der höchsten ID als Leader (keine Konflikte bei parallelen Problemen).
+- Ein zugewiesener Bot fällt während eines Tasks aus: Der Leader markiert den Bot offline und re-queued die Aufgabe (Assigned → Pending) für die Neuvergabe.
+
 ---
 
 ## Nicht-Funktionale Tests (Non-Functional Tests)
@@ -337,3 +351,177 @@ This should be a one-time fix. If the issue persists frequently, check for Docke
 
 - The coordinator's UDP listener now exits gracefully on network errors instead of busy-looping.
 - Detectors listen for termination signals and stop cleanly.
+
+---
+
+## MQTT Topics Reference
+
+This system uses MQTT (Message-Oriented Middleware) for asynchronous communication between components. All topics use QoS 1 (at-least-once delivery) for reliability.
+
+### Device Status and Position
+
+Topics for device lifecycle and position tracking.
+
+| Topic Pattern                     | Publisher               | Subscriber  | Payload                   | Description                           |
+| --------------------------------- | ----------------------- | ----------- | ------------------------- | ------------------------------------- |
+| `devices/{botType}/{id}/status`   | Detectors, Service-Bots | Coordinator | `"online"` or `"offline"` | Bot lifecycle status (online/offline) |
+| `devices/{botType}/{id}/position` | Detectors, Service-Bots | Coordinator | `PositionMessage`         | Position updates with timestamp       |
+
+**PositionMessage Format:**
+
+```json
+{
+  "id": 1,
+  "x": 10,
+  "y": 5,
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+### Event Publishing
+
+Topics for detector problem reports.
+
+| Topic             | Publisher | Subscriber  | Payload        | Description                            |
+| ----------------- | --------- | ----------- | -------------- | -------------------------------------- |
+| `events/problems` | Detectors | Coordinator | `EventMessage` | Problem discovery events (dirt/defect) |
+
+**EventMessage Format:**
+
+```json
+{
+  "detectorId": 3,
+  "type": "dirt",
+  "x": 12,
+  "y": 8,
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+### Leader Election (Bully Algorithm)
+
+Topics for service-bot leader election using the Bully algorithm.
+
+| Topic Pattern                     | Publisher     | Subscriber       | Payload            | Description                                  |
+| --------------------------------- | ------------- | ---------------- | ------------------ | -------------------------------------------- |
+| `election/heartbeat`              | Leader Bot    | All Service-Bots | `HeartbeatMessage` | Leader announces presence periodically       |
+| `election/election/{candidateId}` | Candidate Bot | Higher-ID Bots   | `ElectionMessage`  | Bot starts election, higher-IDs must respond |
+| `election/answer/{candidateId}`   | Higher-ID Bot | Candidate Bot    | `AnswerMessage`    | Response from higher-ID bot ("I'm alive")    |
+| `election/victory/{leaderId}`     | New Leader    | All Service-Bots | `VictoryMessage`   | New leader declares victory                  |
+
+**HeartbeatMessage Format:**
+
+```json
+{
+  "leaderId": 5,
+  "term": 3,
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+**ElectionMessage Format:**
+
+```json
+{
+  "candidateId": 3,
+  "term": 4,
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+**AnswerMessage Format:**
+
+```json
+{
+  "respondingId": 5,
+  "toCandidate": 3,
+  "term": 4,
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+**VictoryMessage Format:**
+
+```json
+{
+  "leaderId": 5,
+  "term": 4,
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+### Bot Metadata and Discovery
+
+Topics for service-bot capability announcement and discovery (retained messages).
+
+| Topic Pattern           | Publisher    | Subscriber       | Payload       | Retained | Description                              |
+| ----------------------- | ------------ | ---------------- | ------------- | -------- | ---------------------------------------- |
+| `bots/metadata/{botId}` | Service-Bots | All Service-Bots | `BotMetadata` | Yes      | Bot announces type, gRPC address, status |
+
+**BotMetadata Format:**
+
+```json
+{
+  "id": 5,
+  "type": "cleaner",
+  "grpcAddr": "servicebot-5:50051",
+  "x": 10,
+  "y": 5,
+  "status": "idle",
+  "taskId": "",
+  "term": 3,
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+### Task Management
+
+Topics for task creation and assignment (event sourcing pattern).
+
+| Topic          | Publisher  | Subscriber       | Payload               | Retained | Description                                    |
+| -------------- | ---------- | ---------------- | --------------------- | -------- | ---------------------------------------------- |
+| `tasks/new`    | Detector   | Leader Bot       | `TaskMessage`         | No       | New tasks available for assignment             |
+| `tasks/events` | Leader Bot | All Service-Bots | `TaskAssignmentEvent` | Yes      | Task state changes (assigned/completed/failed) |
+
+**TaskMessage Format:**
+
+```json
+{
+  "taskId": "task-123-456",
+  "x": 15,
+  "y": 7,
+  "type": "dirt",
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+**TaskAssignmentEvent Format:**
+
+```json
+{
+  "taskId": "task-123-456",
+  "robotId": 5,
+  "eventType": "assigned",
+  "leaderId": 5,
+  "term": 3,
+  "timestamp": "2026-01-13T12:34:56Z"
+}
+```
+
+Event types: `"assigned"`, `"completed"`, `"failed"`, `"timeout"`, `"requeued"`
+
+### Bot Control
+
+Topics for external bot control (UI kill commands).
+
+| Topic Pattern       | Publisher     | Subscriber         | Payload         | Description                        |
+| ------------------- | ------------- | ------------------ | --------------- | ---------------------------------- |
+| `bots/kill/{botId}` | World Service | Target Service-Bot | `{"id": botId}` | Command to gracefully shutdown bot |
+
+### Quality of Service (QoS)
+
+All topics use **QoS 1** (at-least-once delivery) to ensure reliable message delivery while maintaining reasonable performance for real-time position updates.
+
+### Last Will Testament (LWT)
+
+Service-bots and detectors configure Last Will Testament messages on `devices/{botType}/{id}/status` with payload `"offline"` to automatically notify the system of unexpected disconnections.

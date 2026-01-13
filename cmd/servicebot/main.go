@@ -9,18 +9,10 @@ import (
 	servicebots "code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/serviceBots"
 )
 
-// Mode switch: true = MQTT mode, false = UDP mode
-const useMQTT = true
-
 func main() {
 	coordHTTP := os.Getenv("COORD_ADDR")
 	if coordHTTP == "" {
 		coordHTTP = "http://coordinator:8080"
-	}
-
-	udpAddr := os.Getenv("COORD_UDP")
-	if udpAddr == "" {
-		udpAddr = "coordinator:9001"
 	}
 
 	coordGRPC := os.Getenv("COORD_GRPC")
@@ -31,6 +23,11 @@ func main() {
 	mqttBroker := os.Getenv("MQTT_BROKER")
 	if mqttBroker == "" {
 		mqttBroker = "tcp://mosquitto:1884"
+	}
+
+	worldHTTP := os.Getenv("WORLD_ADDR")
+	if worldHTTP == "" {
+		worldHTTP = "http://world:8081"
 	}
 
 	botType := os.Getenv("BOT_TYPE")
@@ -50,35 +47,40 @@ func main() {
 
 	bot := servicebots.New(botType)
 	bot.CoordGRPCAddr = coordGRPC
+	bot.WorldAddr = worldHTTP
 
 	// Parse port for local server
 	port, _ := strconv.Atoi(grpcPort)
 	bot.GRPCPort = port
+
+	// Set the full gRPC address (with hostname) for metadata publishing
+	bot.GRPCListenAddr = grpcAddr
 
 	if err := bot.Register(coordHTTP, grpcAddr); err != nil {
 		log.Fatalf("failed to register %s bot: %v", botType, err)
 	}
 	log.Printf("%s bot registered: id=%d at (%d,%d)", botType, bot.ID, bot.X, bot.Y)
 
-	if useMQTT {
-		log.Println("Starting servicebot in MQTT mode")
-		if err := bot.ConnectMQTT(mqttBroker); err != nil {
-			log.Fatalf("failed to connect MQTT: %v", err)
-		}
-		defer bot.Close()
+	log.Println("Starting servicebot in MQTT mode")
+	if err := bot.ConnectMQTT(mqttBroker); err != nil {
+		log.Fatalf("failed to connect MQTT: %v", err)
+	}
+	defer bot.Close()
 
-		// Publish online status and initial position
-		bot.PublishStatus("online")
-		bot.PublishPosition()
-	} else {
-		log.Println("Starting servicebot in UDP mode")
-		if err := bot.ConnectUDP(udpAddr); err != nil {
-			log.Fatalf("failed to connect UDP: %v", err)
-		}
-		defer bot.Close()
+	// Publish online status and initial position
+	bot.PublishStatus("online")
+	bot.PublishPosition()
 
-		// Send initial position
-		bot.SendPosition()
+	// Publish initial metadata (retained message for state discovery)
+	bot.PublishMetadata()
+
+	// Start leader election loop (only for service bots, not detectors)
+	if botType == "cleaner" || botType == "repair" {
+		log.Printf("%s bot id=%d starting leader election", botType, bot.ID)
+		go bot.StartElectionLoop()
+
+		// Start task management (subscribes to tasks/new)
+		go bot.StartTaskManagement()
 	}
 
 	log.Printf("%s bot id=%d is idle, waiting for tasks on gRPC %s...", botType, bot.ID, grpcAddr)

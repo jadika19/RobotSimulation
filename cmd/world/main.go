@@ -14,6 +14,17 @@ func main() {
 		addr = ":8081"
 	}
 
+	// Initialize MQTT connection
+	mqttBroker := os.Getenv("MQTT_BROKER")
+	if mqttBroker == "" {
+		mqttBroker = "tcp://mosquitto:1883"
+	}
+
+	if err := world.St.InitializeMQTT(mqttBroker); err != nil {
+		log.Printf("Warning: Failed to initialize MQTT: %v", err)
+		log.Println("Continuing without MQTT - leader status will not be available")
+	}
+
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatal(err)

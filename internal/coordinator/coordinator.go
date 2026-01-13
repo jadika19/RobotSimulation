@@ -541,21 +541,23 @@ type TaskCallbackServer struct {
 }
 
 func (s *TaskCallbackServer) ReportCompletion(ctx context.Context, req *taskpb.CompletionRequest) (*taskpb.CompletionResponse, error) {
-	log.Printf("gRPC TaskCallback.ReportCompletion robot=%d task=%s success=%v", req.RobotId, req.TaskId, req.Success)
+	log.Printf("gRPC TaskCallback.ReportCompletion robot=%d task=%s success=%v at (%d,%d)", req.RobotId, req.TaskId, req.Success, req.X, req.Y)
 
 	s.St.Mu.Lock()
-	task, ok := s.St.Tasks[req.TaskId]
-	if !ok {
-		s.St.Mu.Unlock()
-		return &taskpb.CompletionResponse{Acknowledged: false}, nil
-	}
 
-	// Remove problem from KnownProblems
-	key := coordKey(task.X, task.Y)
+	// Remove problem from KnownProblems using coordinates from request
+	// (Leader manages tasks now, so coordinator may not have task in Tasks map)
+	key := coordKey(int(req.X), int(req.Y))
 	delete(s.St.KnownProblems, key)
 
-	// Mark task completed
-	task.Status = "completed"
+	// Check if we have this task (old behavior, may not exist if leader assigned it)
+	task, hasTask := s.St.Tasks[req.TaskId]
+	if hasTask {
+		// Mark task completed
+		task.Status = "completed"
+		// Clean up completed task
+		delete(s.St.Tasks, req.TaskId)
+	}
 
 	// Mark robot as idle
 	if robot, ok := s.St.Robots[int(req.RobotId)]; ok {
@@ -564,16 +566,16 @@ func (s *TaskCallbackServer) ReportCompletion(ctx context.Context, req *taskpb.C
 		s.St.Robots[int(req.RobotId)] = robot
 	}
 
-	// Clean up completed task
-	delete(s.St.Tasks, req.TaskId)
 	worldAddr := s.St.WorldAddr
 	s.St.Mu.Unlock()
 
 	// Try to assign any pending tasks now that a robot is idle
-	go tryAssignPendingTasks(s.St)
+	if hasTask {
+		go tryAssignPendingTasks(s.St)
+	}
 
-	// Delete problem from World service
-	go deleteProblemFromWorld(worldAddr, task.X, task.Y)
+	// Delete problem from World service using coordinates from request
+	go deleteProblemFromWorld(worldAddr, int(req.X), int(req.Y))
 
 	return &taskpb.CompletionResponse{Acknowledged: true}, nil
 }

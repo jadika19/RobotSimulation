@@ -81,6 +81,16 @@ func NewClient(config Config) (*Client, error) {
 
 // Publish sends a message to the specified topic with QoS 1
 func (c *Client) Publish(topic string, payload interface{}) error {
+	return c.publish(topic, payload, false)
+}
+
+// PublishRetained sends a retained message to the specified topic with QoS 1
+func (c *Client) PublishRetained(topic string, payload interface{}) error {
+	return c.publish(topic, payload, true)
+}
+
+// publish is the internal publish method with retained flag support
+func (c *Client) publish(topic string, payload interface{}, retained bool) error {
 	var data []byte
 	var err error
 
@@ -99,7 +109,7 @@ func (c *Client) Publish(topic string, payload interface{}) error {
 	}
 
 	// Publish with QoS 1 (at-least-once delivery)
-	token := c.client.Publish(topic, 1, false, data)
+	token := c.client.Publish(topic, 1, retained, data)
 	if token.Wait() && token.Error() != nil {
 		return fmt.Errorf("failed to publish to topic %s: %w", topic, token.Error())
 	}
@@ -164,6 +174,51 @@ func (c *Client) PublishEvent(event EventMessage) error {
 	return c.Publish("events/problems", event)
 }
 
+// --- Election Publishing Convenience Methods ---
+
+// PublishHeartbeat publishes a leader heartbeat
+func (c *Client) PublishHeartbeat(hb HeartbeatMessage) error {
+	return c.Publish("election/heartbeat", hb)
+}
+
+// PublishElection publishes an election message
+func (c *Client) PublishElection(elec ElectionMessage) error {
+	topic := fmt.Sprintf("election/election/%d", elec.CandidateID)
+	return c.Publish(topic, elec)
+}
+
+// PublishAnswer publishes an answer to an election
+func (c *Client) PublishAnswer(ans AnswerMessage) error {
+	topic := fmt.Sprintf("election/answer/%d", ans.ToCandidate)
+	return c.Publish(topic, ans)
+}
+
+// PublishVictory publishes a victory announcement
+func (c *Client) PublishVictory(vic VictoryMessage) error {
+	topic := fmt.Sprintf("election/victory/%d", vic.LeaderID)
+	return c.Publish(topic, vic)
+}
+
+// --- Bot Metadata Publishing ---
+
+// PublishBotMetadata publishes bot metadata as retained message
+func (c *Client) PublishBotMetadata(meta BotMetadata) error {
+	topic := fmt.Sprintf("bots/metadata/%d", meta.ID)
+	return c.PublishRetained(topic, meta)
+}
+
+// --- Task Publishing ---
+
+// PublishNewTask publishes a new task for leader to assign
+func (c *Client) PublishNewTask(task TaskMessage) error {
+	return c.Publish("tasks/new", task)
+}
+
+// PublishTaskEvent publishes a task event for event sourcing
+func (c *Client) PublishTaskEvent(event TaskAssignmentEvent) error {
+	return c.PublishRetained("tasks/events", event)
+}
+
 // PositionMessage represents a position update payload
 type PositionMessage struct {
 	ID        int    `json:"id"`
@@ -179,4 +234,71 @@ type EventMessage struct {
 	X          int    `json:"x"`
 	Y          int    `json:"y"`
 	Timestamp  string `json:"timestamp"`
+}
+
+// --- Election Messages ---
+
+// HeartbeatMessage - Leader announces presence
+type HeartbeatMessage struct {
+	LeaderID  int    `json:"leaderId"`
+	Term      int    `json:"term"`
+	Timestamp string `json:"timestamp"`
+}
+
+// ElectionMessage - Candidate starts election
+type ElectionMessage struct {
+	CandidateID int    `json:"candidateId"`
+	Term        int    `json:"term"`
+	Timestamp   string `json:"timestamp"`
+}
+
+// AnswerMessage - Higher-ID bot responds to election
+type AnswerMessage struct {
+	RespondingID int    `json:"respondingId"`
+	ToCandidate  int    `json:"toCandidate"`
+	Term         int    `json:"term"`
+	Timestamp    string `json:"timestamp"`
+}
+
+// VictoryMessage - New leader declares victory
+type VictoryMessage struct {
+	LeaderID  int    `json:"leaderId"`
+	Term      int    `json:"term"`
+	Timestamp string `json:"timestamp"`
+}
+
+// --- Bot Metadata Messages ---
+
+// BotMetadata - Bot announces its capabilities and state (retained message)
+type BotMetadata struct {
+	ID        int    `json:"id"`
+	Type      string `json:"type"` // "cleaner" or "repair"
+	GRPCAddr  string `json:"grpcAddr"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	Status    string `json:"status"` // "idle", "busy", "offline"
+	TaskID    string `json:"taskId,omitempty"`
+	Term      int    `json:"term"`
+	Timestamp string `json:"timestamp"`
+}
+
+// --- Task Messages ---
+
+// TaskMessage - Detector announces new task (published to tasks/new)
+type TaskMessage struct {
+	TaskID    string `json:"taskId"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	Type      string `json:"type"` // "dirt" or "defect"
+	Timestamp string `json:"timestamp"`
+}
+
+// TaskAssignmentEvent - Leader assigns task to bot (event sourcing)
+type TaskAssignmentEvent struct {
+	TaskID    string `json:"taskId"`
+	RobotID   int    `json:"robotId"`
+	EventType string `json:"eventType"` // "assigned", "completed", "failed", "timeout"
+	LeaderID  int    `json:"leaderId"`
+	Term      int    `json:"term"`
+	Timestamp string `json:"timestamp"`
 }

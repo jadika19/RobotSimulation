@@ -12,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+
+	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/mqtt"
 )
 
 // ---------- Data Structures ----------
@@ -23,16 +26,20 @@ type Problem struct {
 }
 
 type State struct {
-	Mu       sync.RWMutex
-	Problems map[string]Problem
-	Width    int
-	Height   int
+	Mu              sync.RWMutex
+	Problems        map[string]Problem
+	Width           int
+	Height          int
+	CurrentLeaderID int
+	LastHeartbeat   time.Time
+	MqttClient      *mqtt.Client
 }
 
 var St = &State{
-	Problems: make(map[string]Problem),
-	Width:    20,
-	Height:   20,
+	Problems:        make(map[string]Problem),
+	Width:           20,
+	Height:          20,
+	CurrentLeaderID: -1,
 }
 
 // ---------- Public Functions ----------
@@ -57,12 +64,16 @@ func HandleHTTPRequest(c net.Conn, st *State) {
 		handleWorldMapRequest(c, st)
 	case method == "GET" && path == "/live-map":
 		handleLiveMapRequest(c)
+	case method == "GET" && path == "/leader-status":
+		handleLeaderStatusRequest(c, st)
 	case method == "POST" && path == "/problem":
 		handleProblemUpsert(c, st, body)
 	case method == "POST" && path == "/problem-at":
 		handleProblemAt(c, st, body)
 	case method == "DELETE" && path == "/problem":
 		handleProblemDelete(c, st, body)
+	case method == "POST" && path == "/kill-bot":
+		handleKillBot(c, st, body)
 	case method == "GET" || method == "POST" || method == "DELETE":
 		writeText(c, 404, "Not Found")
 	default:
@@ -194,6 +205,35 @@ func handleProblemUpsert(c net.Conn, st *State, body string) {
 	writeText(c, 200, "stored")
 }
 
+func handleKillBot(c net.Conn, st *State, body string) {
+	var req struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		writeText(c, 400, "invalid json")
+		return
+	}
+	if req.ID <= 0 {
+		writeText(c, 400, "invalid bot id")
+		return
+	}
+	if st.MqttClient == nil {
+		writeText(c, 503, "mqtt not ready")
+		return
+	}
+
+	topic := fmt.Sprintf("bots/kill/%d", req.ID)
+	payload := map[string]int{"id": req.ID}
+	if err := st.MqttClient.Publish(topic, payload); err != nil {
+		log.Printf("[WORLD] failed to publish kill for bot %d: %v", req.ID, err)
+		writeText(c, 500, "failed")
+		return
+	}
+
+	log.Printf("[WORLD] kill request forwarded for bot %d", req.ID)
+	writeText(c, 200, "ok")
+}
+
 func handleProblemAt(c net.Conn, st *State, body string) {
 	var req struct {
 		X int `json:"x"`
@@ -245,4 +285,83 @@ func handleProblemDelete(c net.Conn, st *State, body string) {
 	}
 	st.Mu.Unlock()
 	writeText(c, 404, "not found")
+}
+
+func handleLeaderStatusRequest(c net.Conn, st *State) {
+	st.Mu.RLock()
+	leaderID := st.CurrentLeaderID
+	lastHB := st.LastHeartbeat
+	st.Mu.RUnlock()
+
+	// Check if heartbeat is recent (within 6 seconds) and was ever received
+	isActive := !lastHB.IsZero() && time.Since(lastHB) < 6*time.Second
+
+	resp := map[string]any{
+		"leaderId": leaderID,
+		"active":   isActive,
+	}
+	b, _ := json.Marshal(resp)
+	writeJSON(c, 200, string(b))
+}
+
+// HandleHeartbeat processes incoming MQTT heartbeat messages
+func (st *State) HandleHeartbeat(topic string, payload []byte) {
+	var hb mqtt.HeartbeatMessage
+	if err := json.Unmarshal(payload, &hb); err != nil {
+		log.Printf("[WORLD] Failed to unmarshal heartbeat: %v", err)
+		return
+	}
+
+	st.Mu.Lock()
+	st.CurrentLeaderID = hb.LeaderID
+	st.LastHeartbeat = time.Now()
+	st.Mu.Unlock()
+
+	log.Printf("[WORLD] Received heartbeat from leader %d (term %d)", hb.LeaderID, hb.Term)
+}
+
+// InitializeMQTT sets up MQTT connection and subscriptions for the World service
+func (st *State) InitializeMQTT(brokerURL string) error {
+	clientID := "world-service"
+	config := mqtt.Config{
+		BrokerURL: brokerURL,
+		ClientID:  clientID,
+	}
+
+	// Retry logic to handle MQTT broker startup delays
+	maxRetries := 10
+	retryDelay := 2 * time.Second
+
+	var client *mqtt.Client
+	var err error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		log.Printf("[WORLD] MQTT connection attempt %d/%d to %s", attempt, maxRetries, brokerURL)
+
+		client, err = mqtt.NewClient(config)
+		if err == nil {
+			// Successfully connected
+			break
+		}
+
+		if attempt < maxRetries {
+			log.Printf("[WORLD] MQTT connection failed: %v. Retrying in %v...", err, retryDelay)
+			time.Sleep(retryDelay)
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to create MQTT client after %d attempts: %w", maxRetries, err)
+	}
+
+	st.MqttClient = client
+
+	// Subscribe to heartbeat topic
+	heartbeatTopic := "election/heartbeat"
+	if err := client.Subscribe(heartbeatTopic, st.HandleHeartbeat); err != nil {
+		return fmt.Errorf("failed to subscribe to heartbeat: %w", err)
+	}
+
+	log.Printf("[WORLD] MQTT successfully initialized, subscribed to %s", heartbeatTopic)
+	return nil
 }

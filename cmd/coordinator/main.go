@@ -13,9 +13,6 @@ import (
 	"code.fbi.h-da.de/distributed-systems/praktika/lab-for-distributed-systems-ws-2526/burchard/Di1y_2/internal/mqtt"
 )
 
-// Mode switch: true = MQTT mode, false = UDP/HTTP mode
-const useMQTT = true
-
 func main() {
 	addr := ":8080"
 	grpcAddr := ":9002" // gRPC callback server port
@@ -31,14 +28,9 @@ func main() {
 	}
 	log.Println("coordinator listening on", addr)
 
-	// Start communication layer based on mode
-	if useMQTT {
-		log.Println("Starting in MQTT mode")
-		go startMQTTSubscriber()
-	} else {
-		log.Println("Starting in UDP/HTTP mode")
-		go coordinator.StartUDPListener(":9001", coordinator.St)
-	}
+	// Start MQTT subscriber for position and event messages
+	log.Println("Starting in MQTT mode")
+	go startMQTTSubscriber()
 
 	go coordinator.StartGRPCCallbackServer(grpcAddr, coordinator.St)
 
@@ -87,6 +79,26 @@ func startMQTTSubscriber() {
 		log.Fatalf("Failed to subscribe to status topics: %v", err)
 	}
 
+	// Subscribe to election heartbeats (for monitoring leader)
+	err = client.Subscribe("election/heartbeat", handleElectionHeartbeat)
+	if err != nil {
+		log.Fatalf("Failed to subscribe to election/heartbeat: %v", err)
+	}
+
+	// Subscribe to task events (for monitoring task lifecycle)
+	err = client.Subscribe("tasks/events", handleTaskEventMessage)
+	if err != nil {
+		log.Fatalf("Failed to subscribe to tasks/events: %v", err)
+	}
+
+	// Subscribe to bot metadata (for UI display)
+	err = client.Subscribe("bots/metadata/+", handleBotMetadataMessage)
+	if err != nil {
+		log.Fatalf("Failed to subscribe to bots/metadata: %v", err)
+	}
+
+	log.Println("Coordinator now operating in PASSIVE OBSERVER mode - Leader handles task assignment")
+
 	log.Println("Subscribed to MQTT topics: devices/+/+/position, events/problems, devices/+/+/status")
 
 	// Keep the subscriber running
@@ -122,7 +134,7 @@ func handleEventMessage(topic string, payload []byte) {
 		return
 	}
 
-	log.Printf("problem reported: %s at (%d,%d) by detector %d", event.Type, event.X, event.Y, event.DetectorID)
+	log.Printf("problem reported: %s at (%d,%d) by detector %d (PASSIVE MODE - Leader will assign)", event.Type, event.X, event.Y, event.DetectorID)
 
 	// Check if problem already known (avoid duplicates)
 	key := coordKey(event.X, event.Y)
@@ -131,12 +143,12 @@ func handleEventMessage(topic string, payload []byte) {
 		coordinator.St.Mu.Unlock()
 		return
 	}
-	// Add to KnownProblems
+	// Add to KnownProblems (for monitoring/UI only)
 	coordinator.St.KnownProblems[key] = coordinator.Problem{X: event.X, Y: event.Y, Type: event.Type}
 	coordinator.St.Mu.Unlock()
 
-	// Trigger task assignment in background
-	go coordinator.AssignTask(coordinator.St, event.X, event.Y, event.Type)
+	// DISABLED: Task assignment now handled by Leader
+	// go coordinator.AssignTask(coordinator.St, event.X, event.Y, event.Type)
 }
 
 func handleStatusMessage(topic string, payload []byte) {
@@ -167,6 +179,45 @@ func handleStatusMessage(topic string, payload []byte) {
 		}
 		// Could update robot status field here if needed
 		coordinator.St.Robots[deviceID] = rb
+	}
+	coordinator.St.Mu.Unlock()
+}
+
+func handleElectionHeartbeat(topic string, payload []byte) {
+	var hb mqtt.HeartbeatMessage
+	if err := json.Unmarshal(payload, &hb); err != nil {
+		log.Printf("Failed to unmarshal election heartbeat: %v", err)
+		return
+	}
+
+	log.Printf("[ELECTION] Current leader: Bot %d, term=%d", hb.LeaderID, hb.Term)
+}
+
+func handleTaskEventMessage(topic string, payload []byte) {
+	var event mqtt.TaskAssignmentEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		log.Printf("Failed to unmarshal task event: %v", err)
+		return
+	}
+
+	log.Printf("[TASK] Event: %s - task=%s robot=%d leader=%d", event.EventType, event.TaskID, event.RobotID, event.LeaderID)
+}
+
+func handleBotMetadataMessage(topic string, payload []byte) {
+	var meta mqtt.BotMetadata
+	if err := json.Unmarshal(payload, &meta); err != nil {
+		log.Printf("Failed to unmarshal bot metadata: %v", err)
+		return
+	}
+
+	// Update robot state from metadata
+	coordinator.St.Mu.Lock()
+	if rb, ok := coordinator.St.Robots[meta.ID]; ok {
+		rb.X = meta.X
+		rb.Y = meta.Y
+		rb.Status = meta.Status
+		rb.TaskID = meta.TaskID
+		coordinator.St.Robots[meta.ID] = rb
 	}
 	coordinator.St.Mu.Unlock()
 }

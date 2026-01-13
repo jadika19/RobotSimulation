@@ -33,6 +33,8 @@ message CompletionRequest {
   string task_id = 1;       // The completed task ID
   int32 robot_id = 2;       // Robot that completed it
   bool success = 3;         // Whether the task was successful
+  int32 x = 4;              // Problem X coordinate
+  int32 y = 5;              // Problem Y coordinate
 }
 
 message CompletionResponse {
