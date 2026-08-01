@@ -1,5 +1,8 @@
 # Roboter-Simulation (World + Coordinator + Detector + Service Bots)
 
+> **Kontext:** Team-Projekt mit einem weiteren Studenten im Modul *Verteilte Systeme* an der Hochschule Darmstadt.
+> Enge Zusammenarbeit, oft in Form von Pair-Programming.
+
 Dieses Projekt simuliert ein 2D-Gitter mit getrenntem Weltzustand (Ground Truth), Koordinator, Detektoren und Service-Bots (Cleaner/Repair). Detektoren entdecken Probleme, melden sie dem Koordinator, der den nächstgelegenen Service-Bot per gRPC zum Aufräumen/ Reparieren schickt. Eine Live-Map (Dual View) zeigt sowohl die Welt (alle Probleme) als auch die Koordinator-Sicht (nur entdeckte Probleme).
 
 ---
